@@ -1,0 +1,266 @@
+"use client"
+
+import {
+  Activity, AppWindow, Box, ChevronRight, CircleUserRound, Code2, Command, Cpu,
+  Download, Gauge, Globe2, Grid2X2, HardDrive, Info, Maximize2, MemoryStick,
+  Minus, Network, Package, PanelTop, Power, RefreshCw, Search, Server, Settings,
+  ShieldCheck, Terminal, Wifi, X,
+} from "lucide-react"
+import type { LucideIcon } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { desktopLinux, type RuntimeSnapshot, type VmConnection } from "@/lib/desktop-linux"
+
+type AppId = "desktop" | "terminal" | "store" | "kernel" | "about" | "vscode" | "chrome"
+type WindowState = { id: AppId; minimized: boolean; z: number }
+type AppDefinition = { id: AppId; name: string; subtitle: string; icon: LucideIcon }
+
+const apps: AppDefinition[] = [
+  { id: "desktop", name: "Linux 桌面", subtitle: "QEMU VNC Display", icon: AppWindow },
+  { id: "terminal", name: "终端", subtitle: "Linux Boot Console", icon: Terminal },
+  { id: "store", name: "APT", subtitle: "Debian packages", icon: Package },
+  { id: "kernel", name: "运行时", subtitle: "QEMU VM", icon: Cpu },
+  { id: "vscode", name: "VS Code", subtitle: "Linux GUI 应用", icon: Code2 },
+  { id: "chrome", name: "Chrome", subtitle: "Linux GUI 应用", icon: Globe2 },
+  { id: "about", name: "关于", subtitle: "系统信息", icon: Info },
+]
+
+const packageCatalog = [
+  { name: "code", description: "VS Code / Code OSS 或 Codium 图形编辑器", size: "GUI" },
+  { name: "chromium", description: "开源 Chrome 兼容浏览器", size: "GUI" },
+  { name: "xfce4-terminal", description: "Linux 桌面终端", size: "GUI" },
+  { name: "git", description: "版本控制工具", size: "CLI" },
+  { name: "curl", description: "命令行数据传输工具", size: "CLI" },
+  { name: "build-essential", description: "gcc、make、libc 开发工具链", size: "CLI" },
+  { name: "python3-pip", description: "Python 包管理器", size: "CLI" },
+  { name: "nodejs npm", description: "Node.js 和 npm", size: "CLI" },
+]
+
+const initialRuntime: RuntimeSnapshot = {
+  phase: "idle", detail: "Linux VM 尚未启动", cpuActive: false, diskActive: false, network: "disconnected", bootProgress: 0,
+}
+
+function useRuntime() {
+  const [runtime, setRuntime] = useState<RuntimeSnapshot>(initialRuntime)
+  useEffect(() => desktopLinux.subscribeState(setRuntime), [])
+  return runtime
+}
+
+function AppIcon({ app, active = false }: { app: AppDefinition; active?: boolean }) {
+  const Icon = app.icon
+  return <span className={`app-symbol ${active ? "app-symbol-active" : ""}`}><Icon aria-hidden="true" /></span>
+}
+
+function TopBar({ openApp, runtime }: { openApp: (id: AppId) => void; runtime: RuntimeSnapshot }) {
+  const [time, setTime] = useState("")
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    const update = () => setTime(new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()))
+    update()
+    const timer = window.setInterval(update, 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const boot = async () => {
+    try {
+      await desktopLinux.boot()
+      openApp("desktop")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Linux VM 启动失败")
+    }
+  }
+  return <header className="topbar">
+    <div className="topbar-group">
+      <button className="brand-mark" onClick={() => openApp("about")} aria-label="打开 WorkToper Agent OS 信息"><Grid2X2 /></button>
+      <span className="brand-name">WORKTOPER</span>
+      <button className="workspace-pill" onClick={boot} title={message || "启动 Linux VM"}><span className={`status-dot ${runtime.phase === "error" ? "status-error" : ""}`} />{runtime.phase === "ready" ? "QEMU Linux" : "启动 Linux"}</button>
+    </div>
+    <div className="topbar-center" aria-label="运行状态"><ShieldCheck /><span>QEMU GPLv2</span><span className="divider-dot">·</span><span>Debian APT VM</span></div>
+    <div className="topbar-group topbar-actions">
+      <button onClick={boot} title={message || runtime.detail} aria-label="启动 Linux VM"><Wifi className={runtime.network === "connected" ? "network-online" : ""} /></button>
+      <Activity aria-label={runtime.cpuActive ? "CPU 忙" : "CPU 空闲"} />
+      <button onClick={() => openApp("kernel")} aria-label="打开运行时监视器"><Settings /></button>
+      <time>{time}</time><CircleUserRound aria-label="WorkToper 用户" />
+    </div>
+  </header>
+}
+
+function WindowFrame({ title, subtitle, icon: Icon, active, onFocus, onMinimize, onClose, className = "", children }: {
+  title: string; subtitle: string; icon: LucideIcon; active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void; className?: string; children: React.ReactNode
+}) {
+  const [maximized, setMaximized] = useState(false)
+  return <section className={`os-window ${active ? "is-focused" : ""} ${maximized ? "is-maximized" : ""} ${className}`} onMouseDown={onFocus} aria-label={`${title}窗口`}>
+    <div className="window-titlebar"><div className="window-title"><Icon /><div><strong>{title}</strong><span>{subtitle}</span></div></div>
+      <div className="window-controls"><button onClick={(event) => { event.stopPropagation(); onMinimize() }} aria-label={`最小化${title}`}><Minus /></button><button onClick={(event) => { event.stopPropagation(); setMaximized((value) => !value) }} aria-label={`${maximized ? "还原" : "最大化"}${title}`}><Maximize2 /></button><button onClick={(event) => { event.stopPropagation(); onClose() }} aria-label={`关闭${title}`}><X /></button></div>
+    </div>{children}
+  </section>
+}
+
+function TerminalWindow({ active, onFocus, onMinimize, onClose, runtime }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void; runtime: RuntimeSnapshot }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let disposed = false
+    let cleanup = () => {}
+    void (async () => {
+      const boot = desktopLinux.boot()
+      const [{ Terminal: XTerm }, { FitAddon }, { WebLinksAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/addon-web-links")])
+      if (!hostRef.current || disposed) return
+      const terminal = new XTerm({ cursorBlink: true, convertEol: true, scrollback: 6000, fontSize: 12, lineHeight: 1.3, fontFamily: '"Geist Mono", "SFMono-Regular", Consolas, monospace', theme: { background: "#111317", foreground: "#edf0e8", cursor: "#d4a854", selectionBackground: "#d4a85455", green: "#7fc29b", yellow: "#d4a854", blue: "#72a7c7", red: "#d87979" } })
+      const fit = new FitAddon(); terminal.loadAddon(fit); terminal.loadAddon(new WebLinksAddon()); terminal.open(hostRef.current); fit.fit(); terminal.focus()
+      const unsubscribe = desktopLinux.subscribeData((data) => terminal.write(data))
+      const input = terminal.onData((data) => void desktopLinux.write(data))
+      const observer = new ResizeObserver(() => { try { fit.fit() } catch {} }); observer.observe(hostRef.current)
+      terminal.writeln("\x1b[38;5;214mWorkToper Agent OS\x1b[0m - QEMU 正在启动真实 Linux VM，串口会显示 BIOS、kernel、systemd/getty 日志...")
+      void boot.catch((error) => terminal.writeln(`\r\n\x1b[31m启动失败: ${error instanceof Error ? error.message : String(error)}\x1b[0m`))
+      cleanup = () => { observer.disconnect(); unsubscribe(); input.dispose(); terminal.dispose() }
+    })()
+    return () => { disposed = true; cleanup() }
+  }, [])
+  return <WindowFrame title="Linux Boot Console" subtitle="ttyS0 · QEMU serial" icon={Terminal} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="terminal-window">
+    <div className="terminal-tabs"><span className="terminal-tab"><Terminal />ttyS0</span><span className="terminal-mode"><span className="status-dot" />{runtime.phase === "ready" ? "DEBIAN LINUX" : runtime.phase.toUpperCase()}</span></div>
+    <div className="xterm-host" ref={hostRef} />
+    <footer className="terminal-status"><span><PanelTop />serial</span><span><Network />QEMU VM</span><span>{runtime.bootProgress || 0}%</span><span>{runtime.detail}</span></footer>
+  </WindowFrame>
+}
+
+function LinuxDesktopWindow({ active, onFocus, onMinimize, onClose, runtime }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void; runtime: RuntimeSnapshot }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const rfbRef = useRef<{ disconnect: () => void; scaleViewport?: boolean; resizeSession?: boolean } | null>(null)
+  const [connection, setConnection] = useState<VmConnection | null>(() => desktopLinux.getConnection())
+  const [error, setError] = useState("")
+  useEffect(() => {
+    let disposed = false
+    void (async () => {
+      try {
+        const next = await desktopLinux.boot()
+        if (disposed) return
+        setConnection(next)
+      } catch (reason) {
+        if (!disposed) setError(reason instanceof Error ? reason.message : "Linux VM 启动失败")
+      }
+    })()
+    return () => { disposed = true }
+  }, [])
+  useEffect(() => {
+    if (!hostRef.current || !connection || rfbRef.current) return
+    let disposed = false
+    void (async () => {
+      try {
+        const { default: RFB } = await import("@novnc/novnc")
+        if (!hostRef.current || disposed) return
+        const rfb = new RFB(hostRef.current, connection.vncWebSocketUrl, { shared: true }) as { disconnect: () => void; scaleViewport?: boolean; resizeSession?: boolean }
+        rfb.scaleViewport = true
+        rfb.resizeSession = true
+        rfbRef.current = rfb
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "无法连接 Linux 桌面 VNC")
+      }
+    })()
+    return () => {
+      disposed = true
+      rfbRef.current?.disconnect()
+      rfbRef.current = null
+    }
+  }, [connection])
+  return <WindowFrame title="Linux 桌面" subtitle={connection ? `VNC · SSH 127.0.0.1:${connection.sshPort}` : "QEMU VNC Display"} icon={AppWindow} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="linux-desktop-window">
+    <div className="vnc-toolbar"><span><Server />{runtime.phase === "ready" ? "VM online" : runtime.phase}</span><button onClick={() => void desktopLinux.boot()}><RefreshCw />连接</button></div>
+    <div className="vnc-host" ref={hostRef}>{(!connection || error) && <div className="vnc-overlay"><AppWindow /><strong>{error || runtime.detail}</strong><span>准备好 VM 镜像后，Linux 图形桌面会显示在这里。</span></div>}</div>
+  </WindowFrame>
+}
+
+function StoreWindow({ active, onFocus, onMinimize, onClose }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void }) {
+  const [query, setQuery] = useState("")
+  const [message, setMessage] = useState("选择软件包后会把 apt-get install 命令发送到 Linux VM 终端。")
+  const list = useMemo(() => packageCatalog.filter((pkg) => `${pkg.name} ${pkg.description}`.toLowerCase().includes(query.toLowerCase())), [query])
+  const install = async (name: string) => {
+    setMessage(`正在发送 apt-get install ${name}`)
+    try {
+      await desktopLinux.boot()
+      await desktopLinux.write(`sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${name}\r`)
+      setMessage(`${name} 的安装命令已发送到 Linux VM。`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "发送安装命令失败")
+    }
+  }
+  return <WindowFrame title="APT 应用中心" subtitle="Debian package manager" icon={Package} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="store-window">
+    <div className="store-hero"><div><span className="eyebrow">DEBIAN APT</span><h2>Linux 软件安装</h2><p>安装命令在 QEMU VM 内执行，软件会出现在 Linux 桌面环境中。</p></div><ShieldCheck /></div>
+    <label className="search-box"><Search /><span className="sr-only">搜索软件包</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 code、chromium、git、nodejs…" /><button onClick={() => setQuery("")} aria-label="清空搜索"><RefreshCw /></button></label>
+    <div className="package-list">{list.map((pkg) => <div className="package-row" key={pkg.name}><span className="package-icon"><Command /></span><div><strong>{pkg.name}</strong><p>{pkg.description}</p></div><span className="package-size">{pkg.size}</span><button onClick={() => install(pkg.name)}>安装</button></div>)}</div>
+    <div className="demo-notice"><Info /><span><strong>APT</strong>{message}</span></div>
+  </WindowFrame>
+}
+
+function KernelWindow({ active, onFocus, onMinimize, onClose, runtime }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void; runtime: RuntimeSnapshot }) {
+  const connection = desktopLinux.getConnection()
+  return <WindowFrame title="运行时监视器" subtitle="QEMU Linux VM" icon={Cpu} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="kernel-window"><div className="kernel-grid"><div className="kernel-main"><span className="eyebrow">DESKTOP VM RUNTIME</span><h2>真实 Linux 执行链</h2><div className="architecture-flow"><ArchitectureNode icon={AppWindow} title="Electron Shell" text="窗口与 IPC 控制" state="ready" /><ChevronRight /><ArchitectureNode icon={Cpu} title="QEMU VM" text="HVF/KVM/WHPX/TCG" state={runtime.cpuActive ? "busy" : "idle"} /><ChevronRight /><ArchitectureNode icon={Server} title="Debian Linux" text="APT + XFCE GUI" state={runtime.phase} /></div><div className="kernel-table"><div><span>资源</span><span>后端</span><span>状态</span><span>位置</span></div><div><span>CPU</span><span>QEMU 加速</span><span className="process-state">{runtime.cpuActive ? "运行" : "空闲"}</span><span>本机</span></div><div><span>磁盘</span><span>qcow2</span><span className="process-state">{runtime.diskActive ? "读写" : "空闲"}</span><span>{connection?.arch || "VM"}</span></div><div><span>网络</span><span>QEMU user net</span><span className="process-state">{runtime.network}</span><span>{connection ? `ssh:${connection.sshPort}` : "等待"}</span></div></div></div><aside className="kernel-side"><h3>启动链</h3><div className="mount-list"><span><strong>QEMU</strong><small>开源机器虚拟化器</small></span><span><strong>Debian qcow2</strong><small>APT 软件源和持久磁盘</small></span><span><strong>VNC WebSocket</strong><small>Linux 图形桌面显示</small></span></div><h3>执行边界</h3><ul className="policy-list"><li><ShieldCheck />不使用 Docker</li><li><ShieldCheck />不依赖本机 Ubuntu 镜像</li><li><ShieldCheck />Linux 应用在 VM 内运行</li><li><ShieldCheck />QEMU / Debian 开源方案</li></ul></aside></div></WindowFrame>
+}
+
+function ArchitectureNode({ icon: Icon, title, text, state }: { icon: LucideIcon; title: string; text: string; state: string }) { return <div className="architecture-node"><Icon /><strong>{title}</strong><span>{text}</span><small>{state}</small></div> }
+
+function LinuxAppWindow({ kind, active, onFocus, onMinimize, onClose, openDesktop }: { kind: "vscode" | "chrome"; active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void; openDesktop: () => void }) {
+  const vscode = kind === "vscode"
+  const [message, setMessage] = useState("正在请求 Linux VM 启动应用...")
+  const launch = async () => {
+    setMessage(`正在 Linux 桌面中打开 ${vscode ? "VS Code" : "Chrome"}。`)
+    try {
+      openDesktop()
+      await desktopLinux.launch(kind)
+      setMessage(`启动命令已发送；请在 Linux 桌面窗口查看 ${vscode ? "VS Code" : "Chrome"}。`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "应用启动失败")
+    }
+  }
+  useEffect(() => { void launch() }, [])
+  return <WindowFrame title={vscode ? "VS Code" : "Chrome"} subtitle="Linux GUI application" icon={vscode ? Code2 : Globe2} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="linux-app-window">
+    <div className="app-launch-panel"><span className="web-app-landing-icon">{vscode ? <Code2 /> : <Globe2 />}</span><h3>{vscode ? "VS Code Linux" : "Chrome / Chromium Linux"}</h3><p>{message}</p><button onClick={launch}><RefreshCw />重新启动</button></div>
+  </WindowFrame>
+}
+
+function AboutWindow({ active, onFocus, onMinimize, onClose }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void }) {
+  return <WindowFrame title="关于 WorkToper Agent OS" subtitle="Desktop Linux VM Edition" icon={Info} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="about-window"><div className="about-content"><div className="about-intro"><span className="eyebrow">WORKTOPER AGENT OS</span><h2>完整 Linux 桌面 VM</h2><p>系统由 Electron 启动 QEMU 虚拟机，VM 内运行 Debian、APT、XFCE 桌面和 Linux GUI 应用。终端显示串口启动日志并可直接交互。</p></div><div className="architecture-lanes"><Lane index="01" title="桌面应用" text="Windows、macOS、Linux 上通过 Electron 打开同一个 WorkToper Agent OS 应用。" meta="Electron" /><Lane index="02" title="虚拟机" text="QEMU 启动 qcow2 Linux 磁盘，优先使用 HVF/KVM/WHPX，加速不可用时回落到 TCG。" meta="QEMU" /><Lane index="03" title="Linux 系统" text="Debian VM 提供 apt-get、systemd、XFCE、终端和图形应用运行环境。" meta="Debian" /><Lane index="04" title="桌面显示" text="QEMU VNC WebSocket 直接嵌入应用窗口，不再把 Chrome/VS Code 做成 Web 外链。" meta="noVNC" /><Lane index="05" title="轻量策略" text="应用只携带启动器和可选基础镜像；首次准备后使用持久 qcow2 磁盘，后续启动更快。" meta="qcow2" /></div><div className="boundary-note"><Info /><div><strong>软件许可</strong><p>默认建议使用 Chromium 和 VSCodium/Code OSS 保持开源商用友好；Google Chrome 与 Microsoft VS Code 官方二进制可由用户在 VM 内通过各自许可自行安装。</p></div></div></div></WindowFrame>
+}
+
+function Lane({ index, title, text, meta }: { index: string; title: string; text: string; meta: string }) { return <div className="lane"><span>{index}</span><div><strong>{title}</strong><p>{text}</p></div><small>{meta}</small></div> }
+
+function SystemOverview({ openApp, runtime }: { openApp: (id: AppId) => void; runtime: RuntimeSnapshot }) {
+  return <aside className="system-overview"><div className="overview-heading"><div><span>系统概览</span><strong>{runtime.phase === "ready" ? "Linux 已就绪" : runtime.phase === "error" ? "启动失败" : "正在启动"}</strong></div><span className="status-chip">{runtime.phase}</span></div><div className="boot-metric"><div><Gauge /><span>启动进度</span></div><strong>{runtime.bootProgress || 0}<small>%</small></strong><p>{runtime.detail}</p></div><div className="resource-list"><Resource label="CPU" value={runtime.cpuActive ? "执行中" : "空闲"} width={runtime.cpuActive ? "72%" : "8%"} icon={Cpu} /><Resource label="磁盘 I/O" value={runtime.diskActive ? "读写中" : "空闲"} width={runtime.diskActive ? "62%" : "4%"} icon={MemoryStick} /><Resource label="引擎" value="QEMU VM" width="68%" icon={HardDrive} /></div><div className="runtime-card"><div className="runtime-card-top"><Server /><div><strong>Debian Desktop VM</strong><span>QEMU · qcow2 · APT</span></div><span className="live-pulse" /></div><div className="runtime-stats"><span>状态<strong>{runtime.phase}</strong></span><span>网络<strong>{runtime.network}</strong></span><span>许可<strong>GPLv2</strong></span></div></div><button className="architecture-button" onClick={() => openApp("desktop")}><Box /><span><strong>打开 Linux 桌面</strong><small>VNC 显示真实 GUI 应用</small></span><ChevronRight /></button></aside>
+}
+
+function Resource({ label, value, width, icon: Icon }: { label: string; value: string; width: string; icon: LucideIcon }) { return <div className="resource-row"><div className="resource-meta"><span><Icon />{label}</span><strong>{value}</strong></div><div className="meter"><span style={{ width }} /></div></div> }
+
+function Dock({ windows, openApp }: { windows: WindowState[]; openApp: (id: AppId) => void }) { return <nav className="dock" aria-label="应用 Dock">{apps.map((app) => { const running = windows.some((window) => window.id === app.id); return <button key={app.id} onClick={() => openApp(app.id)} aria-label={`打开${app.name}`} title={`${app.name} · ${app.subtitle}`}><AppIcon app={app} active={running} /><span className="dock-tooltip">{app.name}</span>{running && <span className="running-dot" />}</button> })}<span className="dock-separator" /><button onClick={() => void desktopLinux.stop()} aria-label="关闭 Linux VM" title="关闭 Linux VM"><span className="app-symbol power-symbol"><Power /></span></button></nav> }
+
+export function WebDesktop() {
+  const [windows, setWindows] = useState<WindowState[]>([{ id: "terminal", minimized: false, z: 3 }, { id: "desktop", minimized: false, z: 2 }])
+  const runtime = useRuntime()
+  const topZ = Math.max(2, ...windows.map((window) => window.z))
+  const openApp = (id: AppId) => setWindows((current) => {
+    const exists = current.find((window) => window.id === id)
+    const nextZ = Math.max(2, ...current.map((window) => window.z)) + 1
+    if (exists) return current.map((window) => window.id === id ? { ...window, minimized: false, z: nextZ } : window)
+    return [...current, { id, minimized: false, z: nextZ }]
+  })
+  const focus = (id: AppId) => setWindows((current) => current.map((window) => window.id === id && window.z !== topZ ? { ...window, z: topZ + 1 } : window))
+  const minimize = (id: AppId) => setWindows((current) => current.map((window) => window.id === id ? { ...window, minimized: true } : window))
+  const close = (id: AppId) => setWindows((current) => current.filter((window) => window.id !== id))
+  const launchApp = (id: AppId) => {
+    if (id === "vscode" || id === "chrome") openApp("desktop")
+    openApp(id)
+  }
+  return <main className="web-os-shell">
+    <TopBar openApp={launchApp} runtime={runtime} />
+    <section className="desktop" aria-label="WorkToper Agent OS 桌面">
+      <div className="desktop-watermark" aria-hidden="true"><span>WORKTOPER</span><small>AGENT OS / DESKTOP LINUX VM</small></div>
+      <div className="desktop-shortcuts">{apps.map((app) => <button key={app.id} onDoubleClick={() => launchApp(app.id)} onClick={() => launchApp(app.id)}><AppIcon app={app} /><span>{app.name}</span></button>)}</div>
+      <div className="workspace-layout"><div className="window-stage">
+        {windows.map((window) => !window.minimized && <div key={window.id} className={`window-position window-${window.id}`} style={{ zIndex: window.z }}>
+          {window.id === "terminal" && <TerminalWindow active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} runtime={runtime} />}
+          {window.id === "desktop" && <LinuxDesktopWindow active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} runtime={runtime} />}
+          {window.id === "store" && <StoreWindow active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} />}
+          {window.id === "kernel" && <KernelWindow active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} runtime={runtime} />}
+          {window.id === "about" && <AboutWindow active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} />}
+          {(window.id === "vscode" || window.id === "chrome") && <LinuxAppWindow kind={window.id} active={window.z === topZ} onFocus={() => focus(window.id)} onMinimize={() => minimize(window.id)} onClose={() => close(window.id)} openDesktop={() => openApp("desktop")} />}
+        </div>)}
+      </div><SystemOverview openApp={launchApp} runtime={runtime} /></div>
+    </section>
+    <Dock windows={windows} openApp={launchApp} />
+  </main>
+}
