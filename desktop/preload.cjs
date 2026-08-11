@@ -15,4 +15,14 @@ contextBridge.exposeInMainWorld("worktoperVM", {
     ipcRenderer.on("worktoper:vm:serial", listener)
     return () => ipcRenderer.off("worktoper:vm:serial", listener)
   },
+  onBoot: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on("worktoper:vm:boot", listener)
+    return () => ipcRenderer.off("worktoper:vm:boot", listener)
+  },
+  onTerminal: (callback) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on("worktoper:vm:terminal", listener)
+    return () => ipcRenderer.off("worktoper:vm:terminal", listener)
+  },
 })

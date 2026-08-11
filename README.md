@@ -1,6 +1,6 @@
 # WorkToper Agent OS
 
-WorkToper Agent OS 是一个桌面应用形态的 Linux OS。应用本身使用 Electron 打开，内部由 QEMU 启动一个完整 Linux VM，并通过 noVNC 把 Linux 图形桌面嵌入应用窗口。终端窗口连接 QEMU 串口 `ttyS0`，应用打开后会显示真实的 BIOS、Linux kernel、systemd/getty 启动日志。
+WorkToper Agent OS 是一个桌面应用形态的 Linux OS。应用本身使用 Electron 打开，内部由 QEMU 启动一个完整 Linux VM，并在同一个应用窗口内提供可交互 Linux 桌面。开机画面显示真实的 BIOS、Linux kernel、systemd/getty 启动日志，终端窗口进入可交互 Linux shell。
 
 当前架构不再把 VS Code/Chrome 做成 Web 外链，也不再使用 v86/Buildroot。Linux 命令、APT 安装、GUI 应用都运行在 VM 内。
 
@@ -9,7 +9,7 @@ Electron desktop app
   -> QEMU VM manager
   -> Debian qcow2 disk
   -> APT + systemd + XFCE
-  -> QEMU VNC WebSocket -> noVNC window
+  -> QEMU embedded desktop display
   -> QEMU serial ttyS0 -> xterm.js boot console
 ```
 
@@ -17,8 +17,8 @@ Electron desktop app
 
 - Windows、macOS、Linux 都以桌面应用方式打开。
 - 启动真实 Linux VM，不依赖本机 Ubuntu、Docker、SSH 服务端或浏览器 wasm Linux。
-- Linux 桌面在应用内部显示，可运行图形应用。
-- 终端显示完整启动日志，并可直接对串口 shell 输入命令。
+- Linux 桌面在应用窗口内显示，可直接交互并运行图形应用。
+- Linux 桌面开机画面显示完整启动日志；终端窗口只显示可交互 Linux shell 和用户命令输出。
 - VM 内使用 Debian `apt-get` 安装软件。
 - 默认开源组合建议为 Chromium + VSCodium；启动命令也会优先尝试 `google-chrome` / `code`，如果用户在 VM 内按各自许可安装了官方包，会直接打开官方应用。
 
@@ -55,18 +55,24 @@ corepack pnpm@10.15.0 install
 corepack pnpm@10.15.0 vm:prepare
 ```
 
-`vm:prepare` 会下载 Debian cloud qcow2，创建：
+`vm:prepare` 会下载 Debian cloud qcow2，并把 VM 资产创建到应用默认数据目录：
 
 ```text
-runtime/images/worktoper-agent-os-x64.qcow2
-runtime/images/seed-x64.iso
+macOS: ~/Library/Application Support/WorkToper Agent OS/vm/
+Windows: %APPDATA%\WorkToper Agent OS\vm\
+Linux: ~/.config/WorkToper Agent OS/vm/
+
+worktoper-agent-os-x64.qcow2
+seed-x64.iso
 ```
+
+应用包不携带 qcow2 镜像。需要自定义镜像目录时可以设置 `WORKTOPER_VM_ASSETS_DIR` 后再运行 `vm:prepare`；运行应用时可以用 `WORKTOPER_VM_IMAGE` / `WORKTOPER_VM_SEED` 指定绝对路径。
 
 默认 cloud-init 会安装 XFCE、Chromium、VSCodium、常用 CLI 工具，并配置：
 
 ```text
 用户: worktoper / worktoper
-root: worktoper
+root: root
 串口: ttyS0 root 自动登录
 桌面: lightdm 自动登录 worktoper
 ```
@@ -97,7 +103,7 @@ corepack pnpm@10.15.0 desktop:dev
 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ corepack pnpm@10.15.0 desktop:dev
 ```
 
-启动后会自动启动 VM。Linux 图形桌面在“Linux 桌面”窗口显示，启动日志和命令交互在“终端”窗口显示。
+启动后会自动启动 VM。应用先全屏显示启动日志；Boot 100% 后，Linux 图形桌面会在同一个应用窗口中可交互运行，命令交互在应用内“终端”窗口显示。
 
 ## 打包
 
@@ -144,8 +150,8 @@ Dock 中的 Chrome/VS Code 图标会向 VM 发送对应启动命令，实际窗�
 
 ## 轻量化策略
 
-- Electron 应用只负责桌面壳、VM 管理、串口和 VNC 显示。
-- Linux 系统保存在 qcow2 磁盘里，支持持久化。
+- Electron 应用只负责桌面壳、VM 管理、串口日志和应用启动控制。
+- Linux 系统保存在应用默认数据目录的 qcow2 磁盘里，支持持久化，不随应用包一起打包。
 - 首次启动会执行 cloud-init 安装桌面软件，耗时取决于网络和机器性能；之后直接从持久磁盘启动。
 - QEMU 优先使用硬件加速：macOS HVF、Linux KVM、Windows WHPX；不可用时回落 TCG。
 - 可以通过环境变量调整资源：
@@ -154,6 +160,7 @@ Dock 中的 Chrome/VS Code 图标会向 VM 发送对应启动命令，实际窗�
 WORKTOPER_VM_MEMORY=6144
 WORKTOPER_VM_CPUS=4
 WORKTOPER_VM_IMAGE=/absolute/path/to/worktoper-agent-os-x64.qcow2
+WORKTOPER_DISPLAY_MODE=embedded
 ```
 
 ## 商用合规

@@ -7,13 +7,22 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const runtimeDir = path.join(root, "runtime", "images")
 const arch = process.env.WORKTOPER_VM_ARCH || (process.arch === "arm64" ? "arm64" : "x64")
+function defaultVmDir() {
+  if (process.env.WORKTOPER_VM_ASSETS_DIR) return path.resolve(process.env.WORKTOPER_VM_ASSETS_DIR)
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "WorkToper Agent OS", "vm")
+  if (process.platform === "win32") return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "WorkToper Agent OS", "vm")
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "WorkToper Agent OS", "vm")
+}
+
+const runtimeDir = defaultVmDir()
+const legacyRuntimeDir = path.join(root, "runtime", "images")
 const imageUrls = {
   x64: process.env.WORKTOPER_BASE_IMAGE_URL || "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
   arm64: process.env.WORKTOPER_BASE_IMAGE_URL || "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2",
 }
 const baseImage = path.join(runtimeDir, `debian-bookworm-base-${arch}.qcow2`)
+const legacyBaseImage = path.join(legacyRuntimeDir, `debian-bookworm-base-${arch}.qcow2`)
 const vmImage = path.join(runtimeDir, `worktoper-agent-os-${arch}.qcow2`)
 const seedIso = path.join(runtimeDir, `seed-${arch}.iso`)
 const seedDir = path.join(runtimeDir, `seed-${arch}`)
@@ -98,7 +107,7 @@ ssh_pwauth: true
 chpasswd:
   expire: false
   users:
-    - { name: root, password: worktoper, type: text }
+    - { name: root, password: root, type: text }
     - { name: worktoper, password: worktoper, type: text }
 users:
   - default
@@ -107,6 +116,8 @@ users:
     groups: sudo,adm,audio,video,plugdev
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
+bootcmd:
+  - mkdir -p /var/lib/lightdm/data /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local/share /run/lightdm /var/log/lightdm
 package_update: true
 package_upgrade: false
 packages:
@@ -117,16 +128,29 @@ packages:
   - gnupg
   - git
   - dbus-x11
+  - kbd
   - lightdm
   - xfce4
   - xfce4-terminal
   - xterm
+  - x11vnc
+  - xserver-xorg-video-all
+  - xserver-xorg-input-all
+  - xserver-xorg-video-vesa
+  - xserver-xorg-video-fbdev
+  - xserver-xorg-video-qxl
   - chromium
   - fonts-noto
   - fonts-noto-cjk
   - qemu-guest-agent
 write_files:
   - path: /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
+    permissions: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin root --keep-baud 115200,38400,9600 %I $TERM
+  - path: /etc/systemd/system/serial-getty@ttyS1.service.d/override.conf
     permissions: "0644"
     content: |
       [Service]
@@ -139,24 +163,81 @@ write_files:
       autologin-user=worktoper
       autologin-user-timeout=0
       user-session=xfce
+  - path: /etc/ssh/sshd_config.d/99-worktoper-password-login.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin yes
+      PasswordAuthentication yes
+      KbdInteractiveAuthentication yes
   - path: /usr/local/bin/worktoper-open-code
     permissions: "0755"
     content: |
       #!/bin/sh
       export DISPLAY=:0
-      exec code --no-sandbox "$@" 2>/tmp/worktoper-code.log || exec codium --no-sandbox "$@" 2>/tmp/worktoper-codium.log || exec code-oss --no-sandbox "$@" 2>/tmp/worktoper-code-oss.log || exec mousepad "$@"
+      export XDG_RUNTIME_DIR=/run/user/1000
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+      [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
+      cd /home/worktoper
+      exec code --no-sandbox "$@" 2>/tmp/worktoper-code.log || exec codium --no-sandbox "$@" 2>/tmp/worktoper-codium.log || exec code-oss --no-sandbox "$@" 2>/tmp/worktoper-code-oss.log || exec mousepad "$@" 2>/tmp/worktoper-mousepad.log
   - path: /usr/local/bin/worktoper-open-browser
     permissions: "0755"
     content: |
       #!/bin/sh
       export DISPLAY=:0
-      exec google-chrome --no-sandbox "$@" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox "$@" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox "$@"
+      export XDG_RUNTIME_DIR=/run/user/1000
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+      [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
+      cd /home/worktoper
+      exec google-chrome --no-sandbox "$@" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox "$@" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox "$@" 2>/tmp/worktoper-chromium-browser.log
+  - path: /home/worktoper/Desktop/Terminal.desktop
+    owner: worktoper:worktoper
+    permissions: "0755"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=Terminal
+      Exec=xfce4-terminal
+      Icon=utilities-terminal
+      Terminal=false
+      Categories=System;TerminalEmulator;
+  - path: /home/worktoper/Desktop/Chrome.desktop
+    owner: worktoper:worktoper
+    permissions: "0755"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=Chrome
+      Exec=worktoper-open-browser
+      Icon=chromium
+      Terminal=false
+      Categories=Network;WebBrowser;
+  - path: /home/worktoper/Desktop/VSCode.desktop
+    owner: worktoper:worktoper
+    permissions: "0755"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=VS Code
+      Exec=worktoper-open-code
+      Icon=code
+      Terminal=false
+      Categories=Development;IDE;
 runcmd:
   - systemctl enable qemu-guest-agent || true
   - systemctl enable serial-getty@ttyS0.service
+  - systemctl enable serial-getty@ttyS1.service || true
+  - systemctl restart ssh || systemctl restart sshd || true
+  - mkdir -p /var/lib/lightdm/data /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local/share /run/lightdm /var/log/lightdm
+  - chown -R lightdm:lightdm /var/lib/lightdm /run/lightdm /var/log/lightdm || true
+  - chmod 0755 /var/lib/lightdm /run/lightdm /var/log/lightdm
+  - chmod 0700 /var/lib/lightdm/data /var/lib/lightdm/.cache /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local /var/lib/lightdm/.local/share || true
+  - systemctl reset-failed lightdm display-manager || true
+  - systemctl restart lightdm || systemctl restart display-manager || true
   - systemctl set-default graphical.target
   - mkdir -p /home/worktoper/Desktop /home/worktoper/Projects
+  - chmod +x /home/worktoper/Desktop/*.desktop || true
   - chown -R worktoper:worktoper /home/worktoper
+  - runuser -u worktoper -- sh -lc 'for file in /home/worktoper/Desktop/*.desktop; do gio set "$file" metadata::trusted true >/dev/null 2>&1 || true; done'
   - apt-get update
   - curl -fsSL https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg | gpg --dearmor -o /usr/share/keyrings/vscodium-archive-keyring.gpg || true
   - echo "deb [signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg] https://download.vscodium.com/debs vscodium main" > /etc/apt/sources.list.d/vscodium.list
@@ -200,6 +281,10 @@ async function main() {
   fs.mkdirSync(runtimeDir, { recursive: true })
   if (!which("qemu-img")) {
     throw new Error("qemu-img is required. Install QEMU first, then rerun this script.")
+  }
+  if (!fs.existsSync(baseImage) && fs.existsSync(legacyBaseImage)) {
+    fs.copyFileSync(legacyBaseImage, baseImage)
+    console.log(`Using cached base image: ${legacyBaseImage}`)
   }
   if (!fs.existsSync(baseImage)) {
     await download(imageUrls[arch], baseImage)

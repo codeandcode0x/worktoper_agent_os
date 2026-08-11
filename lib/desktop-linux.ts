@@ -9,6 +9,9 @@ export type RuntimeSnapshot = {
   network: "disconnected" | "connecting" | "connected"
   ip?: string
   bootProgress?: number
+  displayMode?: "embedded"
+  displayName?: string
+  vncWebSocketUrl?: string
 }
 
 export type VmConnection = {
@@ -17,7 +20,10 @@ export type VmConnection = {
   seed?: string
   sshPort: number
   serialPort: number
-  vncWebSocketUrl: string
+  qgaSocketPath?: string
+  displayMode: "embedded"
+  displayName?: string
+  vncWebSocketUrl?: string
 }
 
 type StateListener = (snapshot: RuntimeSnapshot) => void
@@ -32,6 +38,8 @@ declare global {
       launch: (appId: string) => Promise<{ ok: boolean }>
       onState: (callback: (snapshot: RuntimeSnapshot) => void) => () => void
       onSerial: (callback: (data: string) => void) => () => void
+      onBoot: (callback: (data: string) => void) => () => void
+      onTerminal: (callback: (data: string) => void) => () => void
     }
   }
 }
@@ -51,8 +59,11 @@ class DesktopLinuxRuntime {
   private snapshot = initialSnapshot
   private stateListeners = new Set<StateListener>()
   private dataListeners = new Set<DataListener>()
-  private outputHistory: Uint8Array[] = []
-  private outputBytes = 0
+  private bootListeners = new Set<DataListener>()
+  private terminalHistory: Uint8Array[] = []
+  private bootHistory: Uint8Array[] = []
+  private terminalBytes = 0
+  private bootBytes = 0
   private encoder = new TextEncoder()
   private listenersAttached = false
 
@@ -74,8 +85,15 @@ class DesktopLinuxRuntime {
   subscribeData(listener: DataListener, replay = true) {
     this.attachBridgeListeners()
     this.dataListeners.add(listener)
-    if (replay) this.outputHistory.forEach(listener)
+    if (replay) this.terminalHistory.forEach(listener)
     return () => { this.dataListeners.delete(listener) }
+  }
+
+  subscribeBoot(listener: DataListener, replay = true) {
+    this.attachBridgeListeners()
+    this.bootListeners.add(listener)
+    if (replay) this.bootHistory.forEach(listener)
+    return () => { this.bootListeners.delete(listener) }
   }
 
   private update(snapshot: RuntimeSnapshot) {
@@ -83,12 +101,20 @@ class DesktopLinuxRuntime {
     this.stateListeners.forEach((listener) => listener(snapshot))
   }
 
-  private pushSerial(text: string) {
+  private pushTerminal(text: string) {
     const data = this.encoder.encode(text)
-    this.outputHistory.push(data)
-    this.outputBytes += data.byteLength
-    while (this.outputBytes > 256_000 && this.outputHistory.length > 1) this.outputBytes -= this.outputHistory.shift()!.byteLength
+    this.terminalHistory.push(data)
+    this.terminalBytes += data.byteLength
+    while (this.terminalBytes > 256_000 && this.terminalHistory.length > 1) this.terminalBytes -= this.terminalHistory.shift()!.byteLength
     this.dataListeners.forEach((listener) => listener(data))
+  }
+
+  private pushBoot(text: string) {
+    const data = this.encoder.encode(text)
+    this.bootHistory.push(data)
+    this.bootBytes += data.byteLength
+    while (this.bootBytes > 512_000 && this.bootHistory.length > 1) this.bootBytes -= this.bootHistory.shift()!.byteLength
+    this.bootListeners.forEach((listener) => listener(data))
   }
 
   private attachBridgeListeners() {
@@ -99,7 +125,12 @@ class DesktopLinuxRuntime {
       return
     }
     window.worktoperVM.onState((snapshot) => this.update(snapshot))
-    window.worktoperVM.onSerial((data) => this.pushSerial(data))
+    if (window.worktoperVM.onBoot && window.worktoperVM.onTerminal) {
+      window.worktoperVM.onBoot((data) => this.pushBoot(data))
+      window.worktoperVM.onTerminal((data) => this.pushTerminal(data))
+    } else {
+      window.worktoperVM.onSerial((data) => this.pushBoot(data))
+    }
   }
 
   async boot() {
@@ -112,7 +143,7 @@ class DesktopLinuxRuntime {
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       this.update({ ...initialSnapshot, phase: "error", detail: message })
-      this.pushSerial(`\r\n[WorkToper] 启动失败: ${message}\r\n`)
+      this.pushBoot(`\r\n[WorkToper] 启动失败: ${message}\r\n`)
       this.bootPromise = null
       throw error
     })

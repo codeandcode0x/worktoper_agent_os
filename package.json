@@ -66,12 +66,21 @@
       "lib/**/*",
       "out/**/*",
       "public/**/*",
-      "runtime/**/*",
+      "!runtime/**/*",
       "scripts/**/*",
       "types/**/*",
       "package.json",
       "next.config.mjs",
       "README.md"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/qemu",
+        "to": "runtime/qemu",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asar": true,
     "mac": {

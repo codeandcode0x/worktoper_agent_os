@@ -11,6 +11,19 @@ let vmManager = null
 
 app.setName("WorkToper Agent OS")
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer")
+if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", process.env.WORKTOPER_REMOTE_DEBUGGING_PORT || "9223")
+
+const singleInstanceLock = app.requestSingleInstanceLock()
+if (!singleInstanceLock) {
+  app.quit()
+  process.exit(0)
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  })
+}
 
 function getStaticRoot() {
   return isDev ? path.join(__dirname, "..", "out") : path.join(app.getAppPath(), "out")
@@ -39,7 +52,10 @@ async function createWindow() {
     },
   })
 
-  mainWindow.once("ready-to-show", () => mainWindow?.show())
+  mainWindow.once("ready-to-show", () => {
+    mainWindow?.maximize()
+    mainWindow?.show()
+  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     shell.openExternal(targetUrl)
@@ -57,7 +73,10 @@ async function createWindow() {
   })
 
   await mainWindow.loadURL(url)
-  vmManager = new VmManager({ app, webContents: mainWindow.webContents })
+  vmManager = new VmManager({
+    app,
+    webContents: mainWindow.webContents,
+  })
 }
 
 ipcMain.handle("worktoper:vm:start", async () => {
