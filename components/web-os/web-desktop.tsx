@@ -23,6 +23,7 @@ const apps: AppDefinition[] = [
 ]
 
 const dockApps = apps
+const autoLockIdleMs = 10 * 60 * 1000
 
 const packageCatalog = [
   { name: "code", description: "Microsoft VS Code 图形编辑器", size: "GUI" },
@@ -211,7 +212,7 @@ function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
         const rfb = new RFB(hostRef.current, vncWebSocketUrl, { shared: true }) as RfbHandle
         rfb.viewOnly = false
         rfb.scaleViewport = true
-        rfb.resizeSession = true
+        rfb.resizeSession = false
         rfb.clipViewport = false
         rfb.dragViewport = false
         rfb.focusOnClick = true
@@ -256,14 +257,12 @@ function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
     let timer: number | undefined
     const syncSize = () => {
       window.dispatchEvent(new Event("resize"))
-      const rect = hostRef.current?.getBoundingClientRect()
-      if (!rect || rect.width < 100 || rect.height < 100) return
-      const width = Math.round(rect.width)
-      const height = Math.round(rect.height)
-      const key = `${width}x${height}`
+      const key = "1920x1080"
       if (lastResizeRef.current === key) return
       lastResizeRef.current = key
-      void desktopLinux.resizeDesktop(width, height)
+      void desktopLinux.resizeDesktop(1920, 1080)
+      window.setTimeout(() => window.dispatchEvent(new Event("resize")), 350)
+      window.setTimeout(() => window.dispatchEvent(new Event("resize")), 900)
     }
     const observer = new ResizeObserver(() => {
       if (timer) window.clearTimeout(timer)
@@ -275,6 +274,16 @@ function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
       observer.disconnect()
       if (timer) window.clearTimeout(timer)
     }
+  }, [connected, runtime.phase])
+
+  useEffect(() => {
+    if (!connected || runtime.phase !== "ready") return
+    const keepAlive = window.setInterval(() => {
+      window.dispatchEvent(new Event("resize"))
+      void desktopLinux.resizeDesktop(1920, 1080)
+      rfbRef.current?.focus?.({ preventScroll: true })
+    }, 30_000)
+    return () => window.clearInterval(keepAlive)
   }, [connected, runtime.phase])
 
   return <section className="embedded-desktop-surface" aria-label="Linux 图形桌面">
@@ -339,7 +348,7 @@ function Dock({ windows, openApp }: { windows: WindowState[]; openApp: (id: AppI
 
 const fallbackSettings: VmSettings = { cpus: 4, memoryMb: 4096, sharedDirectory: "", lockPassword: "worktoper" }
 
-function DesktopControlOverlay({ runtime, onLock }: { runtime: RuntimeSnapshot; onLock: (password: string) => void }) {
+function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSnapshot; locked: boolean; onLock: (password: string) => void }) {
   const [open, setOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<VmSettings>(fallbackSettings)
@@ -351,6 +360,12 @@ function DesktopControlOverlay({ runtime, onLock }: { runtime: RuntimeSnapshot; 
       setMessage(error instanceof Error ? error.message : "读取设置失败")
     })
   }, [open])
+  useEffect(() => {
+    if (!locked) return
+    setOpen(false)
+    setSettingsOpen(false)
+    setMessage("")
+  }, [locked])
 
   const updateSettings = (patch: Partial<VmSettings>) => {
     setSettings((current) => ({ ...current, ...patch }))
@@ -406,7 +421,14 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
   const [formVisible, setFormVisible] = useState(false)
   const [value, setValue] = useState("")
   const [message, setMessage] = useState("")
+  const [clock, setClock] = useState(() => new Date())
   const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const timeText = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(clock)
+  const dateText = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(clock)
   const unlock = () => {
     if (value === password) {
       setValue("")
@@ -423,6 +445,7 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
     window.setTimeout(() => inputRef.current?.focus(), 50)
   }
   return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label="锁屏">
+    <div className="app-lock-clock" aria-label="当前时间"><strong>{timeText}</strong><span>{dateText}</span></div>
     {!formVisible && <button className="app-lock-primary" onClick={showForm}><LockKeyhole /><span>解锁</span></button>}
     {formVisible && <form className="app-lock-form" onSubmit={(event) => { event.preventDefault(); unlock() }}>
       <LockKeyhole />
@@ -437,7 +460,16 @@ export function WebDesktop() {
   const [windows, setWindows] = useState<WindowState[]>([])
   const [bootOverlayVisible, setBootOverlayVisible] = useState(true)
   const [lockPassword, setLockPassword] = useState("")
+  const activityTimerRef = useRef<number | undefined>(undefined)
   const runtime = useRuntime()
+  const lockWithStoredPassword = async () => {
+    try {
+      const settings = await desktopLinux.getSettings()
+      setLockPassword(settings.lockPassword || fallbackSettings.lockPassword)
+    } catch {
+      setLockPassword(fallbackSettings.lockPassword)
+    }
+  }
   useEffect(() => {
     void desktopLinux.boot().catch(() => undefined)
   }, [])
@@ -448,6 +480,23 @@ export function WebDesktop() {
     }
     setBootOverlayVisible(true)
   }, [runtime.phase])
+  useEffect(() => {
+    if (runtime.phase !== "ready" || lockPassword) return
+    const armTimer = () => {
+      if (activityTimerRef.current) window.clearTimeout(activityTimerRef.current)
+      activityTimerRef.current = window.setTimeout(() => {
+        void lockWithStoredPassword()
+      }, autoLockIdleMs)
+    }
+    const events = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]
+    events.forEach((eventName) => window.addEventListener(eventName, armTimer, { passive: true }))
+    armTimer()
+    return () => {
+      if (activityTimerRef.current) window.clearTimeout(activityTimerRef.current)
+      activityTimerRef.current = undefined
+      events.forEach((eventName) => window.removeEventListener(eventName, armTimer))
+    }
+  }, [runtime.phase, lockPassword])
   const topZ = Math.max(2, ...windows.map((window) => window.z))
   const openApp = (id: AppId) => setWindows((current) => {
     if (id === "desktop" || id === "vscode" || id === "chrome") return current
@@ -485,7 +534,7 @@ export function WebDesktop() {
         </div>)}
       </div><SystemOverview openApp={launchApp} runtime={runtime} /></div>
     </section>
-    {embeddedReady && <DesktopControlOverlay runtime={runtime} onLock={(password) => setLockPassword(password || fallbackSettings.lockPassword)} />}
+    {embeddedReady && <DesktopControlOverlay runtime={runtime} locked={Boolean(lockPassword)} onLock={(password) => setLockPassword(password || fallbackSettings.lockPassword)} />}
     {lockPassword && <AppLockOverlay password={lockPassword} onUnlock={() => setLockPassword("")} />}
     {bootOverlayVisible && <BootScreen runtime={runtime} error={runtime.phase === "error" ? runtime.detail : ""} fullscreen />}
     <Dock windows={windows} openApp={launchApp} />

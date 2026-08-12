@@ -165,6 +165,55 @@ write_files:
       printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\n' >/etc/apt/sources.list.d/google-chrome.list
       DEBIAN_FRONTEND=noninteractive apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-stable
+  - path: /usr/local/sbin/worktoper-install-layan-theme
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      theme_dir=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' | head -n 1 2>/dev/null || true)
+      if [ -n "$theme_dir" ]; then exit 0; fi
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc
+      install -d -m 0755 /opt/worktoper
+      if [ -d /opt/worktoper/Layan-gtk-theme/.git ]; then
+        git -C /opt/worktoper/Layan-gtk-theme pull --ff-only
+      else
+        rm -rf /opt/worktoper/Layan-gtk-theme
+        git clone --depth 1 https://github.com/vinceliuice/Layan-gtk-theme.git /opt/worktoper/Layan-gtk-theme
+      fi
+      cd /opt/worktoper/Layan-gtk-theme
+      bash ./install.sh -d /usr/share/themes -c dark -s solid || bash ./install.sh -d /usr/share/themes -c dark || bash ./install.sh -d /usr/share/themes
+  - path: /usr/local/bin/worktoper-apply-layan-theme
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      export DISPLAY=:0
+      export XDG_RUNTIME_DIR=/run/user/1000
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+      [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
+      theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' -printf '%f\n' | head -n 1 2>/dev/null || true)
+      [ -n "$theme_name" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' -printf '%f\n' | head -n 1 2>/dev/null || true)
+      if [ -z "$theme_name" ]; then
+        exit 1
+      fi
+      theme_path=/usr/share/themes/$theme_name
+      mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xsettings" version="1.0">' '  <property name="Net" type="empty">' "    <property name=\"ThemeName\" type=\"string\" value=\"$theme_name\"/>" '    <property name="IconThemeName" type="string" value="Adwaita"/>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xfwm4" version="1.0">' '  <property name="general" type="empty">' "    <property name=\"theme\" type=\"string\" value=\"$theme_name\"/>" '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+      xfconf-query -c xsettings -p /Net/ThemeName -r >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/theme -r >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Net/ThemeName -n -t string -s "$theme_name" >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/theme -n -t string -s "$theme_name" >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s Adwaita >/dev/null 2>&1 || true
+      mkdir -p /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0
+      printf '%s\n' '[Settings]' "gtk-theme-name=$theme_name" 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini
+      ln -sfn "$theme_path/gtk-4.0/assets" /home/worktoper/.config/gtk-4.0/assets 2>/dev/null || true
+      ln -sfn "$theme_path/gtk-4.0/gtk.css" /home/worktoper/.config/gtk-4.0/gtk.css 2>/dev/null || true
+      ln -sfn "$theme_path/gtk-4.0/gtk-dark.css" /home/worktoper/.config/gtk-4.0/gtk-dark.css 2>/dev/null || true
+      chown -R worktoper:worktoper /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0 /home/worktoper/.config/xfce4 2>/dev/null || true
+      pkill -u worktoper -x xfsettingsd >/dev/null 2>&1 || true
+      nohup xfsettingsd --replace >/tmp/worktoper-xfsettingsd.log 2>&1 &
+      xfwm4 --replace >/tmp/worktoper-xfwm4-theme.log 2>&1 &
   - path: /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
     permissions: "0644"
     content: |
@@ -242,28 +291,6 @@ write_files:
       Icon=utilities-terminal
       Terminal=false
       Categories=System;TerminalEmulator;
-  - path: /home/worktoper/Desktop/Chrome.desktop
-    owner: worktoper:worktoper
-    permissions: "0755"
-    content: |
-      [Desktop Entry]
-      Type=Application
-      Name=Chrome
-      Exec=worktoper-open-browser
-      Icon=chromium
-      Terminal=false
-      Categories=Network;WebBrowser;
-  - path: /home/worktoper/Desktop/VSCode.desktop
-    owner: worktoper:worktoper
-    permissions: "0755"
-    content: |
-      [Desktop Entry]
-      Type=Application
-      Name=VS Code
-      Exec=worktoper-open-code
-      Icon=code
-      Terminal=false
-      Categories=Development;IDE;
   - path: /usr/local/bin/worktoper-trust-desktop-launchers
     permissions: "0755"
     content: |
@@ -280,6 +307,42 @@ write_files:
         [ -n "$checksum" ] && gio set -t string "$file" metadata::xfce-exe-checksum "$checksum" >/dev/null 2>&1 || true
       done
       xfdesktop --reload >/dev/null 2>&1 || true
+  - path: /usr/local/bin/worktoper-keep-display-awake
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      export DISPLAY=:0
+      export XDG_RUNTIME_DIR=/run/user/1000
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+      [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
+      xset s off >/dev/null 2>&1 || true
+      xset s noblank >/dev/null 2>&1 || true
+      xset -dpms >/dev/null 2>&1 || true
+      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 >/dev/null 2>&1 || true
+      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false >/dev/null 2>&1 || true
+      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false >/dev/null 2>&1 || true
+  - path: /home/worktoper/.config/autostart/worktoper-keep-display-awake.desktop
+    owner: worktoper:worktoper
+    permissions: "0644"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=WorkToper Keep Display Awake
+      Exec=/usr/local/bin/worktoper-keep-display-awake
+      OnlyShowIn=XFCE;
+      Terminal=false
+      X-GNOME-Autostart-enabled=true
+  - path: /home/worktoper/.config/autostart/worktoper-layan-theme.desktop
+    owner: worktoper:worktoper
+    permissions: "0644"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=WorkToper Layan Theme
+      Exec=/usr/local/bin/worktoper-apply-layan-theme
+      OnlyShowIn=XFCE;
+      Terminal=false
+      X-GNOME-Autostart-enabled=true
   - path: /home/worktoper/.config/autostart/worktoper-desktop-trust.desktop
     owner: worktoper:worktoper
     permissions: "0644"
@@ -307,7 +370,10 @@ runcmd:
   - chmod +x /home/worktoper/Desktop/*.desktop || true
   - chown -R worktoper:worktoper /home/worktoper
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-trust-desktop-launchers'
-  - rm -f /home/worktoper/Desktop/Codium.desktop /home/worktoper/Desktop/VSCodium.desktop /usr/share/applications/codium.desktop /usr/share/applications/com.vscodium.codium.desktop || true
+  - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake'
+  - /usr/local/sbin/worktoper-install-layan-theme || true
+  - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-apply-layan-theme' || true
+  - rm -f /home/worktoper/Desktop/Chrome.desktop /home/worktoper/Desktop/VSCode.desktop /home/worktoper/Desktop/Code.desktop /home/worktoper/Desktop/Codium.desktop /home/worktoper/Desktop/VSCodium.desktop /usr/share/applications/codium.desktop /usr/share/applications/com.vscodium.codium.desktop || true
   - apt-get purge -y codium vscodium code-oss || true
   - /usr/local/sbin/worktoper-install-vscode || true
   - /usr/local/sbin/worktoper-install-chrome || true

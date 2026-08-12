@@ -1,7 +1,7 @@
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron")
+const { app, BrowserWindow, dialog, ipcMain, screen, shell } = require("electron")
 const { createStaticServer } = require("./static-server.cjs")
 const { VmManager } = require("./vm-manager.cjs")
 
@@ -10,6 +10,7 @@ let staticServer = null
 let mainWindow = null
 let appOrigin = ""
 let vmManager = null
+let resizingToAspect = false
 
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json")
@@ -82,12 +83,24 @@ async function createWindow() {
   staticServer = createStaticServer(root)
   const { url } = await staticServer.listen(0, "127.0.0.1")
   appOrigin = new URL(url).origin
+  const { width: displayWidth, height: displayHeight } = screen.getPrimaryDisplay().workAreaSize
+  const maxContentWidth = Math.max(1024, displayWidth - 160)
+  const maxContentHeight = Math.max(720, displayHeight - 140)
+  let windowWidth = Math.max(1024, Math.min(1280, maxContentWidth))
+  let windowHeight = Math.round(windowWidth * 9 / 16)
+  if (windowHeight > maxContentHeight) {
+    windowHeight = Math.max(720, Math.min(800, maxContentHeight))
+    windowWidth = Math.round(windowHeight * 16 / 9)
+  }
 
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 980,
+    width: windowWidth,
+    height: windowHeight,
+    useContentSize: true,
     minWidth: 1024,
     minHeight: 720,
+    center: true,
+    aspectRatio: 16 / 9,
     title: "WorkToper Agent OS",
     backgroundColor: "#111317",
     show: false,
@@ -101,8 +114,19 @@ async function createWindow() {
   })
 
   mainWindow.once("ready-to-show", () => {
-    mainWindow?.maximize()
+    mainWindow?.setAspectRatio(16 / 9)
     mainWindow?.show()
+  })
+
+  mainWindow.on("resize", () => {
+    if (!mainWindow || resizingToAspect) return
+    const [contentWidth, contentHeight] = mainWindow.getContentSize()
+    if (!contentWidth || !contentHeight) return
+    const expectedHeight = Math.round(contentWidth * 9 / 16)
+    if (Math.abs(expectedHeight - contentHeight) < 2) return
+    resizingToAspect = true
+    mainWindow.setContentSize(contentWidth, expectedHeight)
+    resizingToAspect = false
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
