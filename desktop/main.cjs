@@ -1,3 +1,5 @@
+const fs = require("node:fs")
+const os = require("node:os")
 const path = require("node:path")
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron")
 const { createStaticServer } = require("./static-server.cjs")
@@ -8,6 +10,52 @@ let staticServer = null
 let mainWindow = null
 let appOrigin = ""
 let vmManager = null
+
+function getSettingsPath() {
+  return path.join(app.getPath("userData"), "settings.json")
+}
+
+function defaultVmSettings() {
+  return {
+    cpus: Math.max(2, Math.min(os.cpus().length, 4)),
+    memoryMb: 4096,
+    sharedDirectory: "",
+    lockPassword: "worktoper",
+  }
+}
+
+function normalizeVmSettings(input = {}) {
+  const defaults = defaultVmSettings()
+  const maxCpus = Math.max(1, os.cpus().length)
+  const cpus = Number(input.cpus ?? defaults.cpus)
+  const memoryMb = Number(input.memoryMb ?? defaults.memoryMb)
+  const sharedDirectory = typeof input.sharedDirectory === "string" ? input.sharedDirectory.trim() : ""
+  const lockPassword = typeof input.lockPassword === "string" && input.lockPassword ? input.lockPassword : defaults.lockPassword
+  return {
+    cpus: Number.isFinite(cpus) ? Math.max(1, Math.min(maxCpus, Math.round(cpus))) : defaults.cpus,
+    memoryMb: Number.isFinite(memoryMb) ? Math.max(1024, Math.min(32768, Math.round(memoryMb))) : defaults.memoryMb,
+    sharedDirectory: sharedDirectory && fs.existsSync(sharedDirectory) ? sharedDirectory : "",
+    lockPassword,
+  }
+}
+
+function readVmSettings() {
+  try {
+    const file = getSettingsPath()
+    if (!fs.existsSync(file)) return defaultVmSettings()
+    return normalizeVmSettings(JSON.parse(fs.readFileSync(file, "utf8")))
+  } catch {
+    return defaultVmSettings()
+  }
+}
+
+function writeVmSettings(settings) {
+  const normalized = normalizeVmSettings(settings)
+  const file = getSettingsPath()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, `${JSON.stringify(normalized, null, 2)}\n`)
+  return normalized
+}
 
 app.setName("WorkToper Agent OS")
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer")
@@ -76,6 +124,7 @@ async function createWindow() {
   vmManager = new VmManager({
     app,
     webContents: mainWindow.webContents,
+    getSettings: readVmSettings,
   })
 }
 
@@ -98,6 +147,42 @@ ipcMain.handle("worktoper:vm:launch", (_event, appId) => {
   if (typeof appId !== "string") throw new Error("Invalid app id")
   if (!vmManager) throw new Error("WorkToper VM manager is not ready")
   return vmManager.launch(appId)
+})
+
+ipcMain.handle("worktoper:vm:resize-desktop", (_event, size) => {
+  if (!vmManager) return { ok: false }
+  const width = Number(size?.width)
+  const height = Number(size?.height)
+  return vmManager.resizeDesktop(width, height)
+})
+
+ipcMain.handle("worktoper:vm:settings:get", () => readVmSettings())
+
+ipcMain.handle("worktoper:vm:settings:set", (_event, settings) => writeVmSettings(settings || {}))
+
+ipcMain.handle("worktoper:vm:settings:choose-directory", async () => {
+  if (!mainWindow) throw new Error("WorkToper window is not ready")
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+  })
+  return { canceled: result.canceled, path: result.filePaths[0] || "" }
+})
+
+ipcMain.handle("worktoper:vm:lock", () => {
+  if (!vmManager) throw new Error("WorkToper VM manager is not ready")
+  return vmManager.lock()
+})
+
+ipcMain.handle("worktoper:app:restart", () => {
+  vmManager?.stop()
+  app.relaunch()
+  app.quit()
+  return { ok: true }
+})
+
+ipcMain.handle("worktoper:app:close", () => {
+  app.quit()
+  return { ok: true }
 })
 
 app.whenReady().then(createWindow).catch((error) => {

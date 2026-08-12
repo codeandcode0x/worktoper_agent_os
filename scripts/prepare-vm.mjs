@@ -26,7 +26,6 @@ const legacyBaseImage = path.join(legacyRuntimeDir, `debian-bookworm-base-${arch
 const vmImage = path.join(runtimeDir, `worktoper-agent-os-${arch}.qcow2`)
 const seedIso = path.join(runtimeDir, `seed-${arch}.iso`)
 const seedDir = path.join(runtimeDir, `seed-${arch}`)
-const allowProprietary = process.env.WORKTOPER_ALLOW_PROPRIETARY === "1"
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: "inherit", ...options })
@@ -90,14 +89,6 @@ function download(url, target) {
 function writeSeedFiles() {
   fs.rmSync(seedDir, { recursive: true, force: true })
   fs.mkdirSync(seedDir, { recursive: true })
-  const proprietaryCommands = allowProprietary ? `
-  - curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-linux-keyring.gpg
-  - echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-  - curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/packages.microsoft.gpg
-  - echo "deb [arch=amd64 signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-  - apt-get update
-  - apt-get install -y google-chrome-stable code
-` : ""
 
   const userData = `#cloud-config
 hostname: worktoper-agent-os
@@ -132,7 +123,10 @@ packages:
   - lightdm
   - xfce4
   - xfce4-terminal
+  - xfce4-screensaver
+  - light-locker
   - xterm
+  - x11-xserver-utils
   - x11vnc
   - xserver-xorg-video-all
   - xserver-xorg-input-all
@@ -144,6 +138,33 @@ packages:
   - fonts-noto-cjk
   - qemu-guest-agent
 write_files:
+  - path: /usr/local/sbin/worktoper-install-vscode
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      if command -v code >/dev/null 2>&1; then exit 0; fi
+      arch=$(dpkg --print-architecture)
+      install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >/tmp/worktoper-packages-microsoft.gpg
+      install -m 0644 /tmp/worktoper-packages-microsoft.gpg /usr/share/keyrings/packages.microsoft.gpg
+      printf 'deb [arch=%s signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' "$arch" >/etc/apt/sources.list.d/vscode.list
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y code
+  - path: /usr/local/sbin/worktoper-install-chrome
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      if command -v google-chrome >/dev/null 2>&1; then exit 0; fi
+      arch=$(dpkg --print-architecture)
+      [ "$arch" = amd64 ] || exit 1
+      install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
+      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor >/tmp/worktoper-google-linux.gpg
+      install -m 0644 /tmp/worktoper-google-linux.gpg /usr/share/keyrings/google-linux-keyring.gpg
+      printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\n' >/etc/apt/sources.list.d/google-chrome.list
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-stable
   - path: /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
     permissions: "0644"
     content: |
@@ -178,7 +199,18 @@ write_files:
       export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
       [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
       cd /home/worktoper
-      exec code --no-sandbox "$@" 2>/tmp/worktoper-code.log || exec codium --no-sandbox "$@" 2>/tmp/worktoper-codium.log || exec code-oss --no-sandbox "$@" 2>/tmp/worktoper-code-oss.log || exec mousepad "$@" 2>/tmp/worktoper-mousepad.log
+      if ! command -v code >/dev/null 2>&1; then
+        install_pid=''
+        [ -f /tmp/worktoper-vscode-install.pid ] && install_pid=$(cat /tmp/worktoper-vscode-install.pid 2>/dev/null || true)
+        if [ -z "$install_pid" ] || ! kill -0 "$install_pid" >/dev/null 2>&1; then
+          nohup /usr/local/sbin/worktoper-install-vscode >/tmp/worktoper-install-vscode.log 2>&1 & echo $! >/tmp/worktoper-vscode-install.pid
+        fi
+        if command -v xterm >/dev/null 2>&1; then
+          exec xterm -T 'Installing VS Code' -e sh -lc 'while ! command -v code >/dev/null 2>&1; do clear; echo "正在安装 Microsoft VS Code，请稍候..."; echo; tail -n 22 /tmp/worktoper-install-vscode.log 2>/dev/null || true; sleep 3; done; exec code --no-sandbox'
+        fi
+        while ! command -v code >/dev/null 2>&1; do sleep 3; done
+      fi
+      exec code --no-sandbox "$@" 2>/tmp/worktoper-code.log
   - path: /usr/local/bin/worktoper-open-browser
     permissions: "0755"
     content: |
@@ -188,6 +220,16 @@ write_files:
       export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
       [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
       cd /home/worktoper
+      if ! command -v google-chrome >/dev/null 2>&1; then
+        install_pid=''
+        [ -f /tmp/worktoper-chrome-install.pid ] && install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true)
+        if [ -z "$install_pid" ] || ! kill -0 "$install_pid" >/dev/null 2>&1; then
+          nohup /usr/local/sbin/worktoper-install-chrome >/tmp/worktoper-install-chrome.log 2>&1 & echo $! >/tmp/worktoper-chrome-install.pid
+        fi
+        if command -v xterm >/dev/null 2>&1; then
+          exec xterm -T 'Installing Chrome' -e sh -lc 'install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true); while ! command -v google-chrome >/dev/null 2>&1; do clear; echo "正在安装 Google Chrome，请稍候..."; echo; tail -n 22 /tmp/worktoper-install-chrome.log 2>/dev/null || true; if [ -n "$install_pid" ] && ! kill -0 "$install_pid" >/dev/null 2>&1; then break; fi; sleep 3; done; if command -v google-chrome >/dev/null 2>&1; then exec google-chrome --no-sandbox; fi; exec chromium --no-sandbox || exec chromium-browser --no-sandbox'
+        fi
+      fi
       exec google-chrome --no-sandbox "$@" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox "$@" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox "$@" 2>/tmp/worktoper-chromium-browser.log
   - path: /home/worktoper/Desktop/Terminal.desktop
     owner: worktoper:worktoper
@@ -222,6 +264,33 @@ write_files:
       Icon=code
       Terminal=false
       Categories=Development;IDE;
+  - path: /usr/local/bin/worktoper-trust-desktop-launchers
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      export DISPLAY=:0
+      export XDG_RUNTIME_DIR=/run/user/1000
+      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+      [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
+      for file in /home/worktoper/Desktop/*.desktop; do
+        [ -f "$file" ] || continue
+        chmod +x "$file" 2>/dev/null || true
+        gio set "$file" metadata::trusted true >/dev/null 2>&1 || true
+        checksum=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+        [ -n "$checksum" ] && gio set -t string "$file" metadata::xfce-exe-checksum "$checksum" >/dev/null 2>&1 || true
+      done
+      xfdesktop --reload >/dev/null 2>&1 || true
+  - path: /home/worktoper/.config/autostart/worktoper-desktop-trust.desktop
+    owner: worktoper:worktoper
+    permissions: "0644"
+    content: |
+      [Desktop Entry]
+      Type=Application
+      Name=WorkToper Desktop Trust
+      Exec=/usr/local/bin/worktoper-trust-desktop-launchers
+      OnlyShowIn=XFCE;
+      Terminal=false
+      X-GNOME-Autostart-enabled=true
 runcmd:
   - systemctl enable qemu-guest-agent || true
   - systemctl enable serial-getty@ttyS0.service
@@ -237,13 +306,11 @@ runcmd:
   - mkdir -p /home/worktoper/Desktop /home/worktoper/Projects
   - chmod +x /home/worktoper/Desktop/*.desktop || true
   - chown -R worktoper:worktoper /home/worktoper
-  - runuser -u worktoper -- sh -lc 'for file in /home/worktoper/Desktop/*.desktop; do gio set "$file" metadata::trusted true >/dev/null 2>&1 || true; done'
-  - apt-get update
-  - curl -fsSL https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg | gpg --dearmor -o /usr/share/keyrings/vscodium-archive-keyring.gpg || true
-  - echo "deb [signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg] https://download.vscodium.com/debs vscodium main" > /etc/apt/sources.list.d/vscodium.list
-  - apt-get update || true
-  - apt-get install -y codium || true
-${proprietaryCommands}
+  - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-trust-desktop-launchers'
+  - rm -f /home/worktoper/Desktop/Codium.desktop /home/worktoper/Desktop/VSCodium.desktop /usr/share/applications/codium.desktop /usr/share/applications/com.vscodium.codium.desktop || true
+  - apt-get purge -y codium vscodium code-oss || true
+  - /usr/local/sbin/worktoper-install-vscode || true
+  - /usr/local/sbin/worktoper-install-chrome || true
 final_message: "WorkToper Agent OS Debian desktop is ready. Login: worktoper / worktoper"
 `
   fs.writeFileSync(path.join(seedDir, "user-data"), userData)

@@ -26,6 +26,13 @@ export type VmConnection = {
   vncWebSocketUrl?: string
 }
 
+export type VmSettings = {
+  cpus: number
+  memoryMb: number
+  sharedDirectory: string
+  lockPassword: string
+}
+
 type StateListener = (snapshot: RuntimeSnapshot) => void
 type DataListener = (data: Uint8Array) => void
 
@@ -36,6 +43,13 @@ declare global {
       stop: () => Promise<{ ok: boolean }>
       write: (data: string) => Promise<{ ok: boolean }>
       launch: (appId: string) => Promise<{ ok: boolean }>
+      resizeDesktop: (size: { width: number; height: number }) => Promise<{ ok: boolean }>
+      getSettings: () => Promise<VmSettings>
+      setSettings: (settings: VmSettings) => Promise<VmSettings>
+      chooseSharedDirectory: () => Promise<{ canceled: boolean; path: string }>
+      lock: () => Promise<{ ok: boolean }>
+      restartApp: () => Promise<{ ok: boolean }>
+      closeApp: () => Promise<{ ok: boolean }>
       onState: (callback: (snapshot: RuntimeSnapshot) => void) => () => void
       onSerial: (callback: (data: string) => void) => () => void
       onBoot: (callback: (data: string) => void) => () => void
@@ -165,6 +179,41 @@ class DesktopLinuxRuntime {
     await this.boot()
     if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
     return window.worktoperVM.launch(appId)
+  }
+
+  async resizeDesktop(width: number, height: number) {
+    if (!window.worktoperVM) return
+    await window.worktoperVM.resizeDesktop({ width, height })
+  }
+
+  async getSettings() {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.getSettings()
+  }
+
+  async setSettings(settings: VmSettings) {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.setSettings(settings)
+  }
+
+  async chooseSharedDirectory() {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.chooseSharedDirectory()
+  }
+
+  async lock() {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.lock()
+  }
+
+  async restartApp() {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.restartApp()
+  }
+
+  async closeApp() {
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.closeApp()
   }
 }
 

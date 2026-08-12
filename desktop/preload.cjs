@@ -5,6 +5,13 @@ contextBridge.exposeInMainWorld("worktoperVM", {
   stop: () => ipcRenderer.invoke("worktoper:vm:stop"),
   write: (data) => ipcRenderer.invoke("worktoper:vm:write", data),
   launch: (appId) => ipcRenderer.invoke("worktoper:vm:launch", appId),
+  resizeDesktop: (size) => ipcRenderer.invoke("worktoper:vm:resize-desktop", size),
+  getSettings: () => ipcRenderer.invoke("worktoper:vm:settings:get"),
+  setSettings: (settings) => ipcRenderer.invoke("worktoper:vm:settings:set", settings),
+  chooseSharedDirectory: () => ipcRenderer.invoke("worktoper:vm:settings:choose-directory"),
+  lock: () => ipcRenderer.invoke("worktoper:vm:lock"),
+  restartApp: () => ipcRenderer.invoke("worktoper:app:restart"),
+  closeApp: () => ipcRenderer.invoke("worktoper:app:close"),
   onState: (callback) => {
     const listener = (_event, snapshot) => callback(snapshot)
     ipcRenderer.on("worktoper:vm:state", listener)

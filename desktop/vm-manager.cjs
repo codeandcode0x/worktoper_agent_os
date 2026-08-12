@@ -396,7 +396,7 @@ function getDisplayConfig({ vncTcpPort, vncWebSocketPort }) {
   }
 }
 
-function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs }) {
+function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs, sharedDirectory }) {
   const hostForwards = [
     `hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
     `hostfwd=tcp:127.0.0.1:${vncTcpPort}-:5900`,
@@ -427,6 +427,9 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb,
       "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
     )
   }
+  if (sharedDirectory && fileExists(sharedDirectory)) {
+    args.push("-virtfs", `local,path=${sharedDirectory},mount_tag=worktoper_share,security_model=mapped-xattr,id=worktoper_share`)
+  }
   if (seed) args.push("-drive", `file=${seed},format=raw,if=virtio,media=cdrom,readonly=on`)
   return args
 }
@@ -447,10 +450,11 @@ function findDiskUserHint(disk) {
 }
 
 class VmManager {
-  constructor({ app, webContents, onState }) {
+  constructor({ app, webContents, onState, getSettings }) {
     this.app = app
     this.webContents = webContents
     this.onState = onState
+    this.getSettings = getSettings
     this.process = null
     this.serial = null
     this.guestAgent = null
@@ -463,6 +467,10 @@ class VmManager {
     this.pendingLaunches = []
     this.vncProxyServer = null
     this.vncTcpPort = 0
+    this.sharedDirectory = ""
+    this.pendingDesktopSize = null
+    this.resizeTimer = null
+    this.lastAppliedDesktopSize = ""
     this.state = {
       phase: "idle",
       detail: "Linux VM 尚未启动",
@@ -515,9 +523,12 @@ class VmManager {
     })
     const qgaSocketPath = getQgaSocketPath(this.app)
     if (qgaSocketPath) fs.rmSync(qgaSocketPath, { force: true })
-    const memoryMb = Number(process.env.WORKTOPER_VM_MEMORY || 4096)
-    const cpus = Number(process.env.WORKTOPER_VM_CPUS || Math.max(2, Math.min(os.cpus().length, 4)))
-    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs: display.args })
+    const settings = this.getSettings?.() || {}
+    const memoryMb = Number(process.env.WORKTOPER_VM_MEMORY || settings.memoryMb || 4096)
+    const cpus = Number(process.env.WORKTOPER_VM_CPUS || settings.cpus || Math.max(2, Math.min(os.cpus().length, 4)))
+    const sharedDirectory = typeof settings.sharedDirectory === "string" && fileExists(settings.sharedDirectory) ? settings.sharedDirectory : ""
+    this.sharedDirectory = sharedDirectory
+    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs: display.args, sharedDirectory })
 
     this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
@@ -529,6 +540,9 @@ class VmManager {
       `[WorkToper] Display: ${display.mode} (${display.name})`,
       `[WorkToper] VNC TCP: 127.0.0.1:${display.vncTcpPort} -> guest:5900`,
       display.vncWebSocketUrl ? `[WorkToper] VNC websocket: ${display.vncWebSocketUrl}` : "",
+      `[WorkToper] CPU: ${cpus}`,
+      `[WorkToper] Memory: ${memoryMb} MB`,
+      `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
       `[WorkToper] Launch command: ${qemuCommandLine(qemu, args)}`,
       "",
     ].filter((line) => line !== "").join("\r\n"))
@@ -684,6 +698,16 @@ class VmManager {
 
   async ensureDesktopSession() {
     if (!this.guestAgent) return
+    const sharedDirectoryCommands = this.sharedDirectory ? [
+      "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Shared",
+      "if ! mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
+      "  echo '$ mount shared directory at /home/worktoper/Shared'",
+      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L worktoper_share /home/worktoper/Shared || true",
+      "fi",
+      "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Shared' 'Exec=exo-open --launch FileManager /home/worktoper/Shared' 'Icon=folder' 'Terminal=false' 'Categories=Utility;' > /home/worktoper/Desktop/Shared.desktop",
+    ] : [
+      "rm -f /home/worktoper/Desktop/Shared.desktop 2>/dev/null || true",
+    ]
     const command = [
       "set -u",
       "export DISPLAY=:0",
@@ -694,6 +718,34 @@ class VmManager {
       "chmod 0700 /run/user/1000 2>/dev/null || true",
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Desktop /home/worktoper/Projects",
       "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config /home/worktoper/.config/autostart /home/worktoper/.config/xfce4 /home/worktoper/.config/xfce4/xfconf /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
+      ...sharedDirectoryCommands,
+      "cat >/usr/local/sbin/worktoper-install-vscode <<'WORKTOPER_INSTALL_VSCODE'",
+      "#!/bin/sh",
+      "set -eu",
+      "if command -v code >/dev/null 2>&1; then exit 0; fi",
+      "arch=$(dpkg --print-architecture)",
+      "install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d",
+      "curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >/tmp/worktoper-packages-microsoft.gpg",
+      "install -m 0644 /tmp/worktoper-packages-microsoft.gpg /usr/share/keyrings/packages.microsoft.gpg",
+      "printf 'deb [arch=%s signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main\\n' \"$arch\" >/etc/apt/sources.list.d/vscode.list",
+      "DEBIAN_FRONTEND=noninteractive apt-get update",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y code",
+      "WORKTOPER_INSTALL_VSCODE",
+      "chmod 0755 /usr/local/sbin/worktoper-install-vscode",
+      "cat >/usr/local/sbin/worktoper-install-chrome <<'WORKTOPER_INSTALL_CHROME'",
+      "#!/bin/sh",
+      "set -eu",
+      "if command -v google-chrome >/dev/null 2>&1; then exit 0; fi",
+      "arch=$(dpkg --print-architecture)",
+      "[ \"$arch\" = amd64 ] || exit 1",
+      "install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d",
+      "curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor >/tmp/worktoper-google-linux.gpg",
+      "install -m 0644 /tmp/worktoper-google-linux.gpg /usr/share/keyrings/google-linux-keyring.gpg",
+      "printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\\n' >/etc/apt/sources.list.d/google-chrome.list",
+      "DEBIAN_FRONTEND=noninteractive apt-get update",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-stable",
+      "WORKTOPER_INSTALL_CHROME",
+      "chmod 0755 /usr/local/sbin/worktoper-install-chrome",
       "cat >/usr/local/bin/worktoper-open-browser <<'WORKTOPER_BROWSER'",
       "#!/bin/sh",
       "export DISPLAY=:0",
@@ -701,6 +753,16 @@ class VmManager {
       "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
       "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
       "cd /home/worktoper",
+      "if ! command -v google-chrome >/dev/null 2>&1; then",
+      "  install_pid=''",
+      "  [ -f /tmp/worktoper-chrome-install.pid ] && install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true)",
+      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
+      "    nohup /usr/local/sbin/worktoper-install-chrome >/tmp/worktoper-install-chrome.log 2>&1 & echo $! >/tmp/worktoper-chrome-install.pid",
+      "  fi",
+      "  if command -v xterm >/dev/null 2>&1; then",
+      "    exec xterm -T 'Installing Chrome' -e sh -lc 'install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true); while ! command -v google-chrome >/dev/null 2>&1; do clear; echo \"正在安装 Google Chrome，请稍候...\"; echo; tail -n 22 /tmp/worktoper-install-chrome.log 2>/dev/null || true; if [ -n \"$install_pid\" ] && ! kill -0 \"$install_pid\" >/dev/null 2>&1; then break; fi; sleep 3; done; if command -v google-chrome >/dev/null 2>&1; then exec google-chrome --no-sandbox; fi; exec chromium --no-sandbox || exec chromium-browser --no-sandbox'",
+      "  fi",
+      "fi",
       "exec google-chrome --no-sandbox \"$@\" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox \"$@\" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox \"$@\" 2>/tmp/worktoper-chromium-browser.log",
       "WORKTOPER_BROWSER",
       "cat >/usr/local/bin/worktoper-open-code <<'WORKTOPER_CODE'",
@@ -710,15 +772,63 @@ class VmManager {
       "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
       "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
       "cd /home/worktoper",
-      "exec code --no-sandbox \"$@\" 2>/tmp/worktoper-code.log || exec codium --no-sandbox \"$@\" 2>/tmp/worktoper-codium.log || exec code-oss --no-sandbox \"$@\" 2>/tmp/worktoper-code-oss.log || exec mousepad \"$@\" 2>/tmp/worktoper-mousepad.log",
+      "if ! command -v code >/dev/null 2>&1; then",
+      "  install_pid=''",
+      "  [ -f /tmp/worktoper-vscode-install.pid ] && install_pid=$(cat /tmp/worktoper-vscode-install.pid 2>/dev/null || true)",
+      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
+      "    nohup /usr/local/sbin/worktoper-install-vscode >/tmp/worktoper-install-vscode.log 2>&1 & echo $! >/tmp/worktoper-vscode-install.pid",
+      "  fi",
+      "  if command -v xterm >/dev/null 2>&1; then",
+      "    exec xterm -T 'Installing VS Code' -e sh -lc 'while ! command -v code >/dev/null 2>&1; do clear; echo \"正在安装 Microsoft VS Code，请稍候...\"; echo; tail -n 22 /tmp/worktoper-install-vscode.log 2>/dev/null || true; sleep 3; done; exec code --no-sandbox'",
+      "  fi",
+      "  while ! command -v code >/dev/null 2>&1; do sleep 3; done",
+      "fi",
+      "exec code --no-sandbox \"$@\" 2>/tmp/worktoper-code.log",
       "WORKTOPER_CODE",
       "chmod 0755 /usr/local/bin/worktoper-open-browser /usr/local/bin/worktoper-open-code",
+      "rm -f /home/worktoper/Desktop/Codium.desktop /home/worktoper/Desktop/VSCodium.desktop /usr/share/applications/codium.desktop /usr/share/applications/com.vscodium.codium.desktop 2>/dev/null || true",
+      "if dpkg-query -W -f='${Status}' codium vscodium code-oss 2>/dev/null | grep -q 'install ok installed'; then",
+      "  nohup sh -lc 'DEBIAN_FRONTEND=noninteractive apt-get purge -y codium vscodium code-oss' >/tmp/worktoper-remove-vscodium.log 2>&1 &",
+      "fi",
+      "if ! command -v code >/dev/null 2>&1; then",
+      "  install_pid=''",
+      "  [ -f /tmp/worktoper-vscode-install.pid ] && install_pid=$(cat /tmp/worktoper-vscode-install.pid 2>/dev/null || true)",
+      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
+      "    echo '$ install Microsoft VS Code in background'",
+      "    nohup /usr/local/sbin/worktoper-install-vscode >/tmp/worktoper-install-vscode.log 2>&1 & echo $! >/tmp/worktoper-vscode-install.pid",
+      "  fi",
+      "fi",
+      "if ! command -v google-chrome >/dev/null 2>&1; then",
+      "  install_pid=''",
+      "  [ -f /tmp/worktoper-chrome-install.pid ] && install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true)",
+      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
+      "    echo '$ install Google Chrome in background'",
+      "    nohup /usr/local/sbin/worktoper-install-chrome >/tmp/worktoper-install-chrome.log 2>&1 & echo $! >/tmp/worktoper-chrome-install.pid",
+      "  fi",
+      "fi",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Terminal' 'Exec=xfce4-terminal' 'Icon=utilities-terminal' 'Terminal=false' 'Categories=System;TerminalEmulator;' > /home/worktoper/Desktop/Terminal.desktop",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Chrome' 'Exec=worktoper-open-browser' 'Icon=chromium' 'Terminal=false' 'Categories=Network;WebBrowser;' > /home/worktoper/Desktop/Chrome.desktop",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=VS Code' 'Exec=worktoper-open-code' 'Icon=code' 'Terminal=false' 'Categories=Development;IDE;' > /home/worktoper/Desktop/VSCode.desktop",
+      "cat >/usr/local/bin/worktoper-trust-desktop-launchers <<'WORKTOPER_TRUST_DESKTOP'",
+      "#!/bin/sh",
+      "export DISPLAY=:0",
+      "export XDG_RUNTIME_DIR=/run/user/1000",
+      "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
+      "for file in /home/worktoper/Desktop/*.desktop; do",
+      "  [ -f \"$file\" ] || continue",
+      "  chmod +x \"$file\" 2>/dev/null || true",
+      "  gio set \"$file\" metadata::trusted true >/dev/null 2>&1 || true",
+      "  checksum=$(sha256sum \"$file\" 2>/dev/null | awk '{print $1}')",
+      "  [ -n \"$checksum\" ] && gio set -t string \"$file\" metadata::xfce-exe-checksum \"$checksum\" >/dev/null 2>&1 || true",
+      "done",
+      "xfdesktop --reload >/dev/null 2>&1 || true",
+      "WORKTOPER_TRUST_DESKTOP",
+      "chmod 0755 /usr/local/bin/worktoper-trust-desktop-launchers",
+      "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=WorkToper Desktop Trust' 'Exec=/usr/local/bin/worktoper-trust-desktop-launchers' 'OnlyShowIn=XFCE;' 'Terminal=false' 'X-GNOME-Autostart-enabled=true' > /home/worktoper/.config/autostart/worktoper-desktop-trust.desktop",
       "chmod +x /home/worktoper/Desktop/*.desktop 2>/dev/null || true",
       "chown -R worktoper:worktoper /home/worktoper/Desktop /home/worktoper/.config",
-      "nohup runuser -u worktoper -- sh -lc 'for file in /home/worktoper/Desktop/*.desktop; do gio set \"$file\" metadata::trusted true >/dev/null 2>&1 || true; done' >/tmp/worktoper-desktop-trust.log 2>&1 &",
+      "nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-trust-desktop-launchers' >/tmp/worktoper-desktop-trust.log 2>&1 &",
       "if ! pgrep -u worktoper -x xfce4-session >/dev/null 2>&1; then",
       "  echo '$ startxfce4 (fallback desktop session)'",
       "  runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup dbus-run-session -- startxfce4 >/tmp/worktoper-xfce.log 2>&1 &'",
@@ -803,6 +913,7 @@ class VmManager {
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Boot 100% - Linux desktop is ready (${source}). Embedded display is active.\r\n`)
     this.update({ phase: "ready", detail: "Linux 桌面已就绪", bootProgress: 100, cpuActive: false, diskActive: false, network: "connected" })
     this.flushPendingLaunches()
+    if (this.pendingDesktopSize) this.scheduleDesktopResize()
   }
 
   connectSerial(port) {
@@ -886,7 +997,7 @@ class VmManager {
   launch(appId) {
     const desktopEnv = "export DISPLAY=:0; export XDG_RUNTIME_DIR=/run/user/1000; [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority; "
     const commands = {
-      vscode: `${desktopEnv}worktoper-open-code >/tmp/worktoper-code.log 2>&1 || code --no-sandbox >/tmp/worktoper-code.log 2>&1 || codium --no-sandbox >/tmp/worktoper-code.log 2>&1 || code-oss --no-sandbox >/tmp/worktoper-code.log 2>&1 || mousepad >/tmp/worktoper-code.log 2>&1`,
+      vscode: `${desktopEnv}worktoper-open-code >/tmp/worktoper-code.log 2>&1`,
       chrome: `${desktopEnv}worktoper-open-browser >/tmp/worktoper-chrome.log 2>&1 || google-chrome --no-sandbox >/tmp/worktoper-chrome.log 2>&1 || chromium --no-sandbox >/tmp/worktoper-chrome.log 2>&1 || chromium-browser --no-sandbox >/tmp/worktoper-chrome.log 2>&1`,
       terminal: `${desktopEnv}xfce4-terminal >/tmp/worktoper-terminal.log 2>&1 || xterm >/tmp/worktoper-terminal.log 2>&1`,
     }
@@ -900,6 +1011,86 @@ class VmManager {
     return this.runLaunchCommand(command)
   }
 
+  resizeDesktop(width, height) {
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return { ok: false }
+    const normalized = {
+      width: Math.max(1024, Math.min(3840, Math.round(width / 2) * 2)),
+      height: Math.max(720, Math.min(2160, Math.round(height / 2) * 2)),
+    }
+    this.pendingDesktopSize = normalized
+    if (this.desktopReady) this.scheduleDesktopResize()
+    return { ok: true }
+  }
+
+  scheduleDesktopResize() {
+    if (this.resizeTimer) clearTimeout(this.resizeTimer)
+    this.resizeTimer = setTimeout(() => {
+      this.resizeTimer = null
+      void this.applyDesktopResize().catch((error) => {
+        this.send("worktoper:vm:boot", `\r\n[WorkToper] Resize Linux desktop failed: ${error instanceof Error ? error.message : String(error)}\r\n`)
+      })
+    }, 300)
+  }
+
+  async applyDesktopResize() {
+    if (!this.guestAgent || !this.pendingDesktopSize) return
+    const { width, height } = this.pendingDesktopSize
+    const sizeKey = `${width}x${height}`
+    if (this.lastAppliedDesktopSize === sizeKey) return
+    const command = [
+      "set -u",
+      "export DISPLAY=:0",
+      "export XDG_RUNTIME_DIR=/run/user/1000",
+      "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
+      "if ! command -v xrandr >/dev/null 2>&1; then exit 0; fi",
+      "output=$(xrandr --query | awk '/ connected/{print $1; exit}')",
+      "[ -n \"$output\" ] || exit 0",
+      `width=${width}`,
+      `height=${height}`,
+      "target=\"${width}x${height}\"",
+      "if xrandr --query | awk '{print $1}' | grep -Fx \"$target\" >/dev/null 2>&1; then",
+      "  xrandr --output \"$output\" --mode \"$target\" || xrandr --fb \"$target\" || true",
+      "  exit 0",
+      "fi",
+      "mode=\"${width}x${height}_60.00\"",
+      "if ! xrandr --query | awk '{print $1}' | grep -Fx \"$mode\" >/dev/null 2>&1; then",
+      "  if command -v cvt >/dev/null 2>&1; then",
+      "    modeline=$(cvt \"$width\" \"$height\" 60 | sed -n 's/^Modeline //p' | head -n 1)",
+      "    [ -n \"$modeline\" ] && xrandr --newmode $modeline >/dev/null 2>&1 || true",
+      "  elif command -v gtf >/dev/null 2>&1; then",
+      "    modeline=$(gtf \"$width\" \"$height\" 60 | sed -n 's/^  Modeline //p' | head -n 1)",
+      "    [ -n \"$modeline\" ] && xrandr --newmode $modeline >/dev/null 2>&1 || true",
+      "  fi",
+      "fi",
+      "xrandr --addmode \"$output\" \"$mode\" >/dev/null 2>&1 || true",
+      "xrandr --output \"$output\" --mode \"$mode\" || xrandr --fb \"$target\" || true",
+      "xfdesktop --reload >/dev/null 2>&1 || true",
+    ].join("\n")
+    const status = await this.guestAgent.guestShell(command, { user: "worktoper", captureOutput: true })
+    if (status.exitcode === 0) this.lastAppliedDesktopSize = sizeKey
+    const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
+    if (text && status.exitcode !== 0) this.send("worktoper:vm:boot", `\r\n[WorkToper] Resize Linux desktop\r\n${text}\r\n`)
+  }
+
+  async lock() {
+    if (!this.guestAgent) throw new Error("Linux VM 还没有就绪，无法锁屏")
+    const command = [
+      "set -u",
+      "printf 'worktoper:worktoper\\n' | chpasswd || true",
+      "if ! command -v xflock4 >/dev/null 2>&1 && ! command -v xfce4-screensaver-command >/dev/null 2>&1 && ! command -v light-locker-command >/dev/null 2>&1; then",
+      "  DEBIAN_FRONTEND=noninteractive apt-get update >/tmp/worktoper-locker-apt.log 2>&1 || true",
+      "  DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4-screensaver light-locker >>/tmp/worktoper-locker-apt.log 2>&1 || true",
+      "fi",
+      "runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XDG_RUNTIME_DIR=/run/user/1000; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority; xflock4 || xfce4-screensaver-command --lock || light-locker-command -l || dm-tool lock'",
+    ].join("\n")
+    const status = await this.guestAgent.guestShell(command, { captureOutput: true })
+    const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
+    if (text) this.send("worktoper:vm:boot", `\r\n[WorkToper] Lock screen\r\n${text}\r\n`)
+    if (status.exitcode !== 0) throw new Error("Linux 锁屏失败，请确认 XFCE 会话已启动")
+    return { ok: true }
+  }
+
   stop() {
     this.serial?.destroy()
     this.serial = null
@@ -908,6 +1099,11 @@ class VmManager {
     this.vncProxyServer?.close()
     this.vncProxyServer = null
     this.vncTcpPort = 0
+    this.sharedDirectory = ""
+    if (this.resizeTimer) clearTimeout(this.resizeTimer)
+    this.resizeTimer = null
+    this.pendingDesktopSize = null
+    this.lastAppliedDesktopSize = ""
     if (this.process && !this.process.killed) this.process.kill("SIGTERM")
     this.process = null
     this.connection = null

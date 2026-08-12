@@ -1,14 +1,14 @@
 "use client"
 
 import {
-  Activity, AppWindow, Box, ChevronRight, CircleUserRound, Code2, Command, Cpu,
-  Gauge, Globe2, Grid2X2, HardDrive, Info, Maximize2, MemoryStick,
+  Activity, AppWindow, Box, ChevronDown, ChevronRight, CircleUserRound, Code2, Command, Cpu,
+  FolderOpen, Gauge, Globe2, Grid2X2, HardDrive, Info, LockKeyhole, Maximize2, MemoryStick,
   Minus, Network, Package, PanelTop, Power, RefreshCw, Search, Server, Settings,
   ShieldCheck, Terminal, Wifi, X,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { desktopLinux, type RuntimeSnapshot, type VmConnection } from "@/lib/desktop-linux"
+import { desktopLinux, type RuntimeSnapshot, type VmConnection, type VmSettings } from "@/lib/desktop-linux"
 
 type AppId = "desktop" | "terminal" | "store" | "kernel" | "about" | "vscode" | "chrome"
 type WindowState = { id: AppId; minimized: boolean; z: number }
@@ -25,7 +25,7 @@ const apps: AppDefinition[] = [
 const dockApps = apps
 
 const packageCatalog = [
-  { name: "code", description: "VS Code / Code OSS 或 Codium 图形编辑器", size: "GUI" },
+  { name: "code", description: "Microsoft VS Code 图形编辑器", size: "GUI" },
   { name: "chromium", description: "开源 Chrome 兼容浏览器", size: "GUI" },
   { name: "xfce4-terminal", description: "Linux 桌面终端", size: "GUI" },
   { name: "git", description: "版本控制工具", size: "CLI" },
@@ -164,6 +164,7 @@ type RfbHandle = {
 function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const rfbRef = useRef<RfbHandle | null>(null)
+  const lastResizeRef = useRef("")
   const [connection, setConnection] = useState<VmConnection | null>(() => desktopLinux.getConnection())
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState("")
@@ -210,7 +211,7 @@ function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
         const rfb = new RFB(hostRef.current, vncWebSocketUrl, { shared: true }) as RfbHandle
         rfb.viewOnly = false
         rfb.scaleViewport = true
-        rfb.resizeSession = false
+        rfb.resizeSession = true
         rfb.clipViewport = false
         rfb.dragViewport = false
         rfb.focusOnClick = true
@@ -249,6 +250,32 @@ function EmbeddedDesktopSurface({ runtime }: { runtime: RuntimeSnapshot }) {
       rfbRef.current = null
     }
   }, [vncWebSocketUrl, retryTick])
+
+  useEffect(() => {
+    if (!hostRef.current) return
+    let timer: number | undefined
+    const syncSize = () => {
+      window.dispatchEvent(new Event("resize"))
+      const rect = hostRef.current?.getBoundingClientRect()
+      if (!rect || rect.width < 100 || rect.height < 100) return
+      const width = Math.round(rect.width)
+      const height = Math.round(rect.height)
+      const key = `${width}x${height}`
+      if (lastResizeRef.current === key) return
+      lastResizeRef.current = key
+      void desktopLinux.resizeDesktop(width, height)
+    }
+    const observer = new ResizeObserver(() => {
+      if (timer) window.clearTimeout(timer)
+      timer = window.setTimeout(() => window.requestAnimationFrame(syncSize), 180)
+    })
+    observer.observe(hostRef.current)
+    syncSize()
+    return () => {
+      observer.disconnect()
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [connected, runtime.phase])
 
   return <section className="embedded-desktop-surface" aria-label="Linux 图形桌面">
     <div
@@ -297,7 +324,7 @@ function KernelWindow({ active, onFocus, onMinimize, onClose, runtime }: { activ
 function ArchitectureNode({ icon: Icon, title, text, state }: { icon: LucideIcon; title: string; text: string; state: string }) { return <div className="architecture-node"><Icon /><strong>{title}</strong><span>{text}</span><small>{state}</small></div> }
 
 function AboutWindow({ active, onFocus, onMinimize, onClose }: { active: boolean; onFocus: () => void; onMinimize: () => void; onClose: () => void }) {
-  return <WindowFrame title="关于 WorkToper Agent OS" subtitle="Desktop Linux VM Edition" icon={Info} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="about-window"><div className="about-content"><div className="about-intro"><span className="eyebrow">WORKTOPER AGENT OS</span><h2>完整 Linux 桌面 VM</h2><p>系统由 Electron 启动 QEMU 虚拟机，VM 内运行 Debian、APT、XFCE 桌面和 Linux GUI 应用。应用启动时全屏显示 BIOS、kernel、systemd 启动过程，进入桌面后在同一个应用窗口内交互。</p></div><div className="architecture-lanes"><Lane index="01" title="桌面应用" text="Windows、macOS、Linux 上通过 Electron 打开同一个 WorkToper Agent OS 应用。" meta="Electron" /><Lane index="02" title="虚拟机" text="QEMU 启动用户数据目录中的 qcow2 Linux 磁盘，优先使用 HVF/KVM/WHPX。" meta="QEMU" /><Lane index="03" title="Linux 系统" text="Debian VM 提供 apt-get、systemd、XFCE、终端和图形应用运行环境。" meta="Debian" /><Lane index="04" title="桌面显示" text="QEMU 通过内嵌显示通道把桌面渲染到应用窗口。" meta="Embedded" /><Lane index="05" title="轻量策略" text="应用包不携带 qcow2 镜像；镜像保存在应用默认数据目录，应用更新不会膨胀。" meta="qcow2" /></div><div className="boundary-note"><Info /><div><strong>软件许可</strong><p>默认建议使用 Chromium 和 VSCodium/Code OSS 保持开源商用友好；Google Chrome 与 Microsoft VS Code 官方二进制可由用户在 VM 内通过各自许可自行安装。</p></div></div></div></WindowFrame>
+  return <WindowFrame title="关于 WorkToper Agent OS" subtitle="Desktop Linux VM Edition" icon={Info} active={active} onFocus={onFocus} onMinimize={onMinimize} onClose={onClose} className="about-window"><div className="about-content"><div className="about-intro"><span className="eyebrow">WORKTOPER AGENT OS</span><h2>完整 Linux 桌面 VM</h2><p>系统由 Electron 启动 QEMU 虚拟机，VM 内运行 Debian、APT、XFCE 桌面和 Linux GUI 应用。应用启动时全屏显示 BIOS、kernel、systemd 启动过程，进入桌面后在同一个应用窗口内交互。</p></div><div className="architecture-lanes"><Lane index="01" title="桌面应用" text="Windows、macOS、Linux 上通过 Electron 打开同一个 WorkToper Agent OS 应用。" meta="Electron" /><Lane index="02" title="虚拟机" text="QEMU 启动用户数据目录中的 qcow2 Linux 磁盘，优先使用 HVF/KVM/WHPX。" meta="QEMU" /><Lane index="03" title="Linux 系统" text="Debian VM 提供 apt-get、systemd、XFCE、终端和图形应用运行环境。" meta="Debian" /><Lane index="04" title="桌面显示" text="QEMU 通过内嵌显示通道把桌面渲染到应用窗口。" meta="Embedded" /><Lane index="05" title="轻量策略" text="应用包不携带 qcow2 镜像；镜像保存在应用默认数据目录，应用更新不会膨胀。" meta="qcow2" /></div><div className="boundary-note"><Info /><div><strong>软件许可</strong><p>镜像默认安装 Microsoft VS Code 与 Google Chrome；Chrome 安装失败时会用 Chromium 兜底打开。</p></div></div></div></WindowFrame>
 }
 
 function Lane({ index, title, text, meta }: { index: string; title: string; text: string; meta: string }) { return <div className="lane"><span>{index}</span><div><strong>{title}</strong><p>{text}</p></div><small>{meta}</small></div> }
@@ -310,9 +337,106 @@ function Resource({ label, value, width, icon: Icon }: { label: string; value: s
 
 function Dock({ windows, openApp }: { windows: WindowState[]; openApp: (id: AppId) => void }) { return <nav className="dock" aria-label="应用 Dock">{dockApps.map((app) => { const running = windows.some((window) => window.id === app.id); return <button key={app.id} onClick={() => openApp(app.id)} aria-label={`打开${app.name}`} title={`${app.name} · ${app.subtitle}`}><AppIcon app={app} active={running} /><span className="dock-tooltip">{app.name}</span>{running && <span className="running-dot" />}</button> })}<span className="dock-separator" /><button onClick={() => void desktopLinux.stop()} aria-label="关闭 Linux VM" title="关闭 Linux VM"><span className="app-symbol power-symbol"><Power /></span></button></nav> }
 
+const fallbackSettings: VmSettings = { cpus: 4, memoryMb: 4096, sharedDirectory: "", lockPassword: "worktoper" }
+
+function DesktopControlOverlay({ runtime, onLock }: { runtime: RuntimeSnapshot; onLock: (password: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settings, setSettings] = useState<VmSettings>(fallbackSettings)
+  const [message, setMessage] = useState("")
+
+  useEffect(() => {
+    if (!open) return
+    void desktopLinux.getSettings().then(setSettings).catch((error) => {
+      setMessage(error instanceof Error ? error.message : "读取设置失败")
+    })
+  }, [open])
+
+  const updateSettings = (patch: Partial<VmSettings>) => {
+    setSettings((current) => ({ ...current, ...patch }))
+    setMessage("")
+  }
+  const chooseDirectory = async () => {
+    try {
+      const result = await desktopLinux.chooseSharedDirectory()
+      if (!result.canceled) updateSettings({ sharedDirectory: result.path })
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "选择目录失败")
+    }
+  }
+  const saveSettings = async () => {
+    try {
+      const saved = await desktopLinux.setSettings(settings)
+      setSettings(saved)
+      setMessage("已保存，重启应用后生效")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存设置失败")
+    }
+  }
+  const lockScreen = async () => {
+    setOpen(false)
+    setSettingsOpen(false)
+    onLock(settings.lockPassword || fallbackSettings.lockPassword)
+  }
+
+  return <>
+    <button className="desktop-control-trigger" onClick={() => setOpen(true)} aria-label="打开系统控制">
+      <ChevronDown />
+    </button>
+    {open && <div className="desktop-control-overlay" role="dialog" aria-modal="true" aria-label="系统控制">
+      <button className="desktop-control-close" onClick={() => { setOpen(false); setSettingsOpen(false); setMessage("") }} aria-label="关闭系统控制"><X /></button>
+      <div className="desktop-control-actions">
+        <button onClick={() => setSettingsOpen((value) => !value)}><Settings /><span>设置</span></button>
+        <button onClick={() => void lockScreen()}><LockKeyhole /><span>锁屏</span></button>
+        <button onClick={() => void desktopLinux.restartApp()}><RefreshCw /><span>重启</span></button>
+        <button onClick={() => void desktopLinux.closeApp()}><Power /><span>关闭</span></button>
+      </div>
+      {settingsOpen && <section className="desktop-settings-panel" aria-label="Linux 桌面运行设置">
+        <label><span>CPU</span><input type="number" min="1" max="32" value={settings.cpus} onChange={(event) => updateSettings({ cpus: Number(event.target.value) })} /></label>
+        <label><span>内存 MB</span><input type="number" min="1024" max="32768" step="512" value={settings.memoryMb} onChange={(event) => updateSettings({ memoryMb: Number(event.target.value) })} /></label>
+        <label><span>锁屏密码</span><input type="password" value={settings.lockPassword} onChange={(event) => updateSettings({ lockPassword: event.target.value })} placeholder="worktoper" /></label>
+        <label className="desktop-share-field"><span>共享目录</span><div><input value={settings.sharedDirectory} onChange={(event) => updateSettings({ sharedDirectory: event.target.value })} placeholder="未设置" /><button onClick={chooseDirectory} aria-label="选择共享目录"><FolderOpen /></button></div></label>
+        <footer><span>{message || `状态：${runtime.detail}`}</span><button onClick={saveSettings}>保存</button></footer>
+      </section>}
+    </div>}
+  </>
+}
+
+function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: () => void }) {
+  const [formVisible, setFormVisible] = useState(false)
+  const [value, setValue] = useState("")
+  const [message, setMessage] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
+  const unlock = () => {
+    if (value === password) {
+      setValue("")
+      setMessage("")
+      onUnlock()
+      return
+    }
+    setMessage("密码错误")
+    setValue("")
+    window.setTimeout(() => inputRef.current?.focus(), 50)
+  }
+  const showForm = () => {
+    setFormVisible(true)
+    window.setTimeout(() => inputRef.current?.focus(), 50)
+  }
+  return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label="锁屏">
+    {!formVisible && <button className="app-lock-primary" onClick={showForm}><LockKeyhole /><span>解锁</span></button>}
+    {formVisible && <form className="app-lock-form" onSubmit={(event) => { event.preventDefault(); unlock() }}>
+      <LockKeyhole />
+      <input ref={inputRef} type="password" value={value} onChange={(event) => { setValue(event.target.value); setMessage("") }} placeholder="输入密码" />
+      <button type="submit">解锁</button>
+      <span>{message || "默认密码 worktoper"}</span>
+    </form>}
+  </div>
+}
+
 export function WebDesktop() {
   const [windows, setWindows] = useState<WindowState[]>([])
   const [bootOverlayVisible, setBootOverlayVisible] = useState(true)
+  const [lockPassword, setLockPassword] = useState("")
   const runtime = useRuntime()
   useEffect(() => {
     void desktopLinux.boot().catch(() => undefined)
@@ -361,6 +485,8 @@ export function WebDesktop() {
         </div>)}
       </div><SystemOverview openApp={launchApp} runtime={runtime} /></div>
     </section>
+    {embeddedReady && <DesktopControlOverlay runtime={runtime} onLock={(password) => setLockPassword(password || fallbackSettings.lockPassword)} />}
+    {lockPassword && <AppLockOverlay password={lockPassword} onUnlock={() => setLockPassword("")} />}
     {bootOverlayVisible && <BootScreen runtime={runtime} error={runtime.phase === "error" ? runtime.detail : ""} fullscreen />}
     <Dock windows={windows} openApp={launchApp} />
   </main>
