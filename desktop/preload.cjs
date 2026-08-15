@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("worktoperVM", {
   setSettings: (settings) => ipcRenderer.invoke("worktoper:vm:settings:set", settings),
   chooseSharedDirectory: () => ipcRenderer.invoke("worktoper:vm:settings:choose-directory"),
   lock: () => ipcRenderer.invoke("worktoper:vm:lock"),
+  readClipboardText: () => ipcRenderer.invoke("worktoper:clipboard:read-text"),
+  writeClipboardText: (text) => ipcRenderer.invoke("worktoper:clipboard:write-text", text),
   restartApp: () => ipcRenderer.invoke("worktoper:app:restart"),
   closeApp: () => ipcRenderer.invoke("worktoper:app:close"),
   onState: (callback) => {

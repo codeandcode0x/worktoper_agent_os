@@ -1,7 +1,7 @@
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
-const { app, BrowserWindow, dialog, ipcMain, screen, shell } = require("electron")
+const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } = require("electron")
 const { createStaticServer } = require("./static-server.cjs")
 const { VmManager } = require("./vm-manager.cjs")
 
@@ -195,6 +195,13 @@ ipcMain.handle("worktoper:vm:settings:choose-directory", async () => {
 ipcMain.handle("worktoper:vm:lock", () => {
   if (!vmManager) throw new Error("WorkToper VM manager is not ready")
   return vmManager.lock()
+})
+
+ipcMain.handle("worktoper:clipboard:read-text", () => ({ text: clipboard.readText() || "" }))
+
+ipcMain.handle("worktoper:clipboard:write-text", (_event, text) => {
+  clipboard.writeText(typeof text === "string" ? text : "")
+  return { ok: true }
 })
 
 ipcMain.handle("worktoper:app:restart", () => {

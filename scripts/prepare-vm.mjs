@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import fs from "node:fs"
 import https from "node:https"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -26,6 +27,12 @@ const legacyBaseImage = path.join(legacyRuntimeDir, `debian-bookworm-base-${arch
 const vmImage = path.join(runtimeDir, `worktoper-agent-os-${arch}.qcow2`)
 const seedIso = path.join(runtimeDir, `seed-${arch}.iso`)
 const seedDir = path.join(runtimeDir, `seed-${arch}`)
+const initializedMarker = path.join(runtimeDir, `worktoper-agent-os-${arch}.initialized`)
+const backgroundSourceDir = path.join(root, "bg")
+const seedBackgroundDir = path.join(seedDir, "backgrounds")
+const defaultBackgroundName = "Alchemy-5.png"
+const forceRebuild = process.argv.includes("--force") || process.argv.includes("--rebuild") || process.env.WORKTOPER_VM_REBUILD === "1"
+const skipInitialize = process.argv.includes("--skip-init") || process.env.WORKTOPER_VM_SKIP_INIT === "1"
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: "inherit", ...options })
@@ -34,10 +41,48 @@ function run(command, args, options = {}) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      server.close(() => {
+        if (!address || typeof address === "string") {
+          reject(new Error("Unable to allocate localhost port"))
+          return
+        }
+        resolve(address.port)
+      })
+    })
+  })
+}
+
 function which(command) {
   const result = spawnSync(process.platform === "win32" ? "where" : "which", [command], { encoding: "utf8" })
   if (result.status !== 0) return ""
   return result.stdout.split(/\r?\n/).find(Boolean) || ""
+}
+
+function copyBackgroundsToSeed() {
+  fs.rmSync(seedBackgroundDir, { recursive: true, force: true })
+  if (!fs.existsSync(backgroundSourceDir)) return false
+  const files = fs.readdirSync(backgroundSourceDir)
+    .filter((name) => /\.(jpe?g|png|webp)$/i.test(name))
+    .sort()
+  if (!files.length) return false
+  fs.mkdirSync(seedBackgroundDir, { recursive: true })
+  for (const file of files) {
+    fs.copyFileSync(path.join(backgroundSourceDir, file), path.join(seedBackgroundDir, file))
+  }
+  if (!files.includes(defaultBackgroundName)) {
+    throw new Error(`Default background is missing: ${path.join(backgroundSourceDir, defaultBackgroundName)}`)
+  }
+  return true
 }
 
 function download(url, target) {
@@ -89,7 +134,13 @@ function download(url, target) {
 function writeSeedFiles() {
   fs.rmSync(seedDir, { recursive: true, force: true })
   fs.mkdirSync(seedDir, { recursive: true })
+  copyBackgroundsToSeed()
 
+  const powerState = skipInitialize ? "" : `power_state:
+  mode: poweroff
+  timeout: 30
+  condition: true
+`
   const userData = `#cloud-config
 hostname: worktoper-agent-os
 manage_etc_hosts: true
@@ -123,8 +174,6 @@ packages:
   - lightdm
   - xfce4
   - xfce4-terminal
-  - xfce4-screensaver
-  - light-locker
   - xterm
   - x11-xserver-utils
   - x11vnc
@@ -136,6 +185,8 @@ packages:
   - chromium
   - fonts-noto
   - fonts-noto-cjk
+  - fonts-noto-color-emoji
+  - papirus-icon-theme
   - qemu-guest-agent
 write_files:
   - path: /usr/local/sbin/worktoper-install-vscode
@@ -148,7 +199,7 @@ write_files:
       install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
       curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >/tmp/worktoper-packages-microsoft.gpg
       install -m 0644 /tmp/worktoper-packages-microsoft.gpg /usr/share/keyrings/packages.microsoft.gpg
-      printf 'deb [arch=%s signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' "$arch" >/etc/apt/sources.list.d/vscode.list
+      printf 'deb [arch=%s signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main\\n' "$arch" >/etc/apt/sources.list.d/vscode.list
       DEBIAN_FRONTEND=noninteractive apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y code
   - path: /usr/local/sbin/worktoper-install-chrome
@@ -162,7 +213,7 @@ write_files:
       install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
       curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor >/tmp/worktoper-google-linux.gpg
       install -m 0644 /tmp/worktoper-google-linux.gpg /usr/share/keyrings/google-linux-keyring.gpg
-      printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\n' >/etc/apt/sources.list.d/google-chrome.list
+      printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\\n' >/etc/apt/sources.list.d/google-chrome.list
       DEBIAN_FRONTEND=noninteractive apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-stable
   - path: /usr/local/sbin/worktoper-install-layan-theme
@@ -170,10 +221,15 @@ write_files:
     content: |
       #!/bin/sh
       set -eu
-      theme_dir=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' | head -n 1 2>/dev/null || true)
-      if [ -n "$theme_dir" ]; then exit 0; fi
-      DEBIAN_FRONTEND=noninteractive apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc
+      packages='git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc papirus-icon-theme fonts-noto fonts-noto-cjk fonts-noto-color-emoji librsvg2-common'
+      missing=''
+      for package in $packages; do
+        dpkg-query -W -f='\${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $package"
+      done
+      if [ -n "$missing" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $missing
+      fi
       install -d -m 0755 /opt/worktoper
       if [ -d /opt/worktoper/Layan-gtk-theme/.git ]; then
         git -C /opt/worktoper/Layan-gtk-theme pull --ff-only
@@ -183,6 +239,50 @@ write_files:
       fi
       cd /opt/worktoper/Layan-gtk-theme
       bash ./install.sh -d /usr/share/themes -c dark -s solid || bash ./install.sh -d /usr/share/themes -c dark || bash ./install.sh -d /usr/share/themes
+  - path: /usr/local/sbin/worktoper-install-backgrounds
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      target=/usr/share/backgrounds/worktoper
+      backdrops=/usr/share/xfce4/backdrops
+      install -d -m 0755 "$target" "$backdrops"
+      copied=0
+      copy_background_dir() {
+        source_dir=$1
+        [ -d "$source_dir" ] || return 0
+        found=0
+        for file in "$source_dir"/*; do
+          [ -f "$file" ] || continue
+          case "$file" in
+            *.jpg|*.jpeg|*.png|*.webp|*.JPG|*.JPEG|*.PNG|*.WEBP)
+              cp -f "$file" "$target"/
+              found=1
+              ;;
+          esac
+        done
+        [ "$found" -eq 0 ] || copied=1
+      }
+      for source_dir in /var/lib/cloud/seed/nocloud/backgrounds /var/lib/cloud/seed/nocloud-net/backgrounds /media/cidata/backgrounds /mnt/backgrounds /run/cloud-init/backgrounds /media/*/backgrounds /run/media/*/cidata/backgrounds; do
+        copy_background_dir "$source_dir"
+      done
+      if [ "$copied" -eq 0 ]; then
+        tmp=$(mktemp -d)
+        for dev in /dev/disk/by-label/cidata /dev/disk/by-label/CIDATA /dev/vdb /dev/sr0; do
+          [ -e "$dev" ] || continue
+          mount -o ro "$dev" "$tmp" 2>/dev/null || continue
+          copy_background_dir "$tmp/backgrounds"
+          umount "$tmp" 2>/dev/null || true
+          [ "$copied" -eq 0 ] || break
+        done
+        rmdir "$tmp" 2>/dev/null || true
+      fi
+      for file in "$target"/*; do
+        [ -f "$file" ] || continue
+        chmod 0644 "$file" 2>/dev/null || true
+        chown root:root "$file" 2>/dev/null || true
+        ln -sfn "$file" "$backdrops/$(basename "$file")" 2>/dev/null || true
+      done
   - path: /usr/local/bin/worktoper-apply-layan-theme
     permissions: "0755"
     content: |
@@ -191,29 +291,51 @@ write_files:
       export XDG_RUNTIME_DIR=/run/user/1000
       export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
       [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
-      theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' -printf '%f\n' | head -n 1 2>/dev/null || true)
-      [ -n "$theme_name" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' -printf '%f\n' | head -n 1 2>/dev/null || true)
+      theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*Solid*' -printf '%f\\n' | head -n 1 2>/dev/null || true)
+      [ -n "$theme_name" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' -printf '%f\\n' | head -n 1 2>/dev/null || true)
+      [ -n "$theme_name" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' -printf '%f\\n' | head -n 1 2>/dev/null || true)
+      icon_theme=Papirus-Dark
+      [ -d /usr/share/icons/$icon_theme ] || icon_theme=Adwaita
       if [ -z "$theme_name" ]; then
         exit 1
       fi
       theme_path=/usr/share/themes/$theme_name
+      wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png
       mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml
-      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xsettings" version="1.0">' '  <property name="Net" type="empty">' "    <property name=\"ThemeName\" type=\"string\" value=\"$theme_name\"/>" '    <property name="IconThemeName" type="string" value="Adwaita"/>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
-      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xfwm4" version="1.0">' '  <property name="general" type="empty">' "    <property name=\"theme\" type=\"string\" value=\"$theme_name\"/>" '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+      if [ ! -f "$wallpaper" ]; then
+        echo "WorkToper background missing: $wallpaper" >&2
+      fi
+      printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xsettings" version="1.0">' '  <property name="Net" type="empty">' "    <property name=\"ThemeName\" type=\"string\" value=\"$theme_name\"/>" "    <property name=\"IconThemeName\" type=\"string\" value=\"$icon_theme\"/>" '  </property>' '  <property name="Gtk" type="empty">' '    <property name="FontName" type="string" value="Noto Sans 10"/>' '    <property name="MonospaceFontName" type="string" value="Noto Sans Mono 10"/>' '    <property name="DecorationLayout" type="string" value="menu:minimize,maximize,close"/>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+      printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xfwm4" version="1.0">' '  <property name="general" type="empty">' "    <property name=\"theme\" type=\"string\" value=\"$theme_name\"/>" '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
       xfconf-query -c xsettings -p /Net/ThemeName -r >/dev/null 2>&1 || true
       xfconf-query -c xfwm4 -p /general/theme -r >/dev/null 2>&1 || true
       xfconf-query -c xsettings -p /Net/ThemeName -n -t string -s "$theme_name" >/dev/null 2>&1 || true
       xfconf-query -c xfwm4 -p /general/theme -n -t string -s "$theme_name" >/dev/null 2>&1 || true
-      xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s Adwaita >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s "$icon_theme" >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Gtk/DecorationLayout -n -t string -s 'menu:minimize,maximize,close' >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Gtk/FontName -n -t string -s 'Noto Sans 10' >/dev/null 2>&1 || true
+      xfconf-query -c xsettings -p /Gtk/MonospaceFontName -n -t string -s 'Noto Sans Mono 10' >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/use_compositing -n -t bool -s true >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/frame_opacity -n -t int -s 100 >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/inactive_opacity -n -t int -s 94 >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/show_frame_shadow -n -t bool -s true >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/show_popup_shadow -n -t bool -s true >/dev/null 2>&1 || true
+      xfconf-query -c xfwm4 -p /general/button_layout -n -t string -s 'O|HMC' >/dev/null 2>&1 || true
+      for monitor in monitor0 monitorVirtual-1 monitorVirtual1 monitorVNC-0 monitorDefault; do
+        base=/backdrop/screen0/$monitor/workspace0
+        xfconf-query -c xfce4-desktop -p $base/last-image -n -t string -s "$wallpaper" >/dev/null 2>&1 || true
+        xfconf-query -c xfce4-desktop -p $base/image-path -n -t string -s "$wallpaper" >/dev/null 2>&1 || true
+        xfconf-query -c xfce4-desktop -p $base/image-style -n -t int -s 5 >/dev/null 2>&1 || true
+      done
+      for property in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/last-image$|/image-path$' || true); do xfconf-query -c xfce4-desktop -p "$property" -s "$wallpaper" >/dev/null 2>&1 || true; done
+      for property in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/image-style$' || true); do xfconf-query -c xfce4-desktop -p "$property" -s 5 >/dev/null 2>&1 || true; done
       mkdir -p /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0
-      printf '%s\n' '[Settings]' "gtk-theme-name=$theme_name" 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini
+      printf '%s\\n' '[Settings]' "gtk-theme-name=$theme_name" "gtk-icon-theme-name=$icon_theme" 'gtk-font-name=Noto Sans 10' 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini
       ln -sfn "$theme_path/gtk-4.0/assets" /home/worktoper/.config/gtk-4.0/assets 2>/dev/null || true
       ln -sfn "$theme_path/gtk-4.0/gtk.css" /home/worktoper/.config/gtk-4.0/gtk.css 2>/dev/null || true
       ln -sfn "$theme_path/gtk-4.0/gtk-dark.css" /home/worktoper/.config/gtk-4.0/gtk-dark.css 2>/dev/null || true
       chown -R worktoper:worktoper /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0 /home/worktoper/.config/xfce4 2>/dev/null || true
-      pkill -u worktoper -x xfsettingsd >/dev/null 2>&1 || true
-      nohup xfsettingsd --replace >/tmp/worktoper-xfsettingsd.log 2>&1 &
-      xfwm4 --replace >/tmp/worktoper-xfwm4-theme.log 2>&1 &
+      xfdesktop --reload >/dev/null 2>&1 || true
   - path: /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
     permissions: "0644"
     content: |
@@ -281,7 +403,6 @@ write_files:
       fi
       exec google-chrome --no-sandbox "$@" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox "$@" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox "$@" 2>/tmp/worktoper-chromium-browser.log
   - path: /home/worktoper/Desktop/Terminal.desktop
-    owner: worktoper:worktoper
     permissions: "0755"
     content: |
       [Desktop Entry]
@@ -322,7 +443,6 @@ write_files:
       xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false >/dev/null 2>&1 || true
       xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false >/dev/null 2>&1 || true
   - path: /home/worktoper/.config/autostart/worktoper-keep-display-awake.desktop
-    owner: worktoper:worktoper
     permissions: "0644"
     content: |
       [Desktop Entry]
@@ -333,7 +453,6 @@ write_files:
       Terminal=false
       X-GNOME-Autostart-enabled=true
   - path: /home/worktoper/.config/autostart/worktoper-layan-theme.desktop
-    owner: worktoper:worktoper
     permissions: "0644"
     content: |
       [Desktop Entry]
@@ -344,7 +463,6 @@ write_files:
       Terminal=false
       X-GNOME-Autostart-enabled=true
   - path: /home/worktoper/.config/autostart/worktoper-desktop-trust.desktop
-    owner: worktoper:worktoper
     permissions: "0644"
     content: |
       [Desktop Entry]
@@ -363,6 +481,14 @@ runcmd:
   - chown -R lightdm:lightdm /var/lib/lightdm /run/lightdm /var/log/lightdm || true
   - chmod 0755 /var/lib/lightdm /run/lightdm /var/log/lightdm
   - chmod 0700 /var/lib/lightdm/data /var/lib/lightdm/.cache /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local /var/lib/lightdm/.local/share || true
+  - /usr/local/sbin/worktoper-install-backgrounds || true
+  - mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml /home/worktoper/.config/gtk-3.0
+  - printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xsettings" version="1.0">' '  <property name="Net" type="empty">' '    <property name="IconThemeName" type="string" value="Papirus-Dark"/>' '  </property>' '  <property name="Gtk" type="empty">' '    <property name="FontName" type="string" value="Noto Sans 10"/>' '    <property name="MonospaceFontName" type="string" value="Noto Sans Mono 10"/>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+  - printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xfce4-desktop" version="1.0">' '  <property name="backdrop" type="empty">' '    <property name="screen0" type="empty">' '      <property name="monitor0" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorVirtual-1" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorVirtual1" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorDefault" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '    </property>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+  - printf '%s\\n' '[Settings]' 'gtk-icon-theme-name=Papirus-Dark' 'gtk-font-name=Noto Sans 10' >/home/worktoper/.config/gtk-3.0/settings.ini
+  - for monitor in monitor0 monitorVirtual-1 monitorVirtual1 monitorVNC-0 monitorDefault; do base=/backdrop/screen0/$monitor/workspace0; xfconf-query -c xfce4-desktop -p $base/last-image -n -t string -s /usr/share/backgrounds/worktoper/Alchemy-5.png >/dev/null 2>&1 || true; xfconf-query -c xfce4-desktop -p $base/image-path -n -t string -s /usr/share/backgrounds/worktoper/Alchemy-5.png >/dev/null 2>&1 || true; xfconf-query -c xfce4-desktop -p $base/image-style -n -t int -s 5 >/dev/null 2>&1 || true; done
+  - rm -f /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+  - chown -R worktoper:worktoper /home/worktoper/.config
   - systemctl reset-failed lightdm display-manager || true
   - systemctl restart lightdm || systemctl restart display-manager || true
   - systemctl set-default graphical.target
@@ -371,13 +497,21 @@ runcmd:
   - chown -R worktoper:worktoper /home/worktoper
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-trust-desktop-launchers'
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake'
+  - /usr/local/sbin/worktoper-install-backgrounds || true
   - /usr/local/sbin/worktoper-install-layan-theme || true
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-apply-layan-theme' || true
   - rm -f /home/worktoper/Desktop/Chrome.desktop /home/worktoper/Desktop/VSCode.desktop /home/worktoper/Desktop/Code.desktop /home/worktoper/Desktop/Codium.desktop /home/worktoper/Desktop/VSCodium.desktop /usr/share/applications/codium.desktop /usr/share/applications/com.vscodium.codium.desktop || true
-  - apt-get purge -y codium vscodium code-oss || true
+  - for package in codium vscodium code-oss; do dpkg-query -W -f='\${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' && apt-get purge -y "$package" || true; done
   - /usr/local/sbin/worktoper-install-vscode || true
   - /usr/local/sbin/worktoper-install-chrome || true
+  - mkdir -p /var/lib/worktoper
+  - test -x /usr/sbin/lightdm
+  - test -x /usr/bin/x11vnc
+  - test -x /usr/sbin/qemu-ga
+  - touch /var/lib/worktoper/desktop-image-ready
+  - echo "WORKTOPER_DESKTOP_IMAGE_READY"
 final_message: "WorkToper Agent OS Debian desktop is ready. Login: worktoper / worktoper"
+${powerState}
 `
   fs.writeFileSync(path.join(seedDir, "user-data"), userData)
   fs.writeFileSync(path.join(seedDir, "meta-data"), `instance-id: worktoper-agent-os-${arch}-${Date.now()}\nlocal-hostname: worktoper-agent-os\n`)
@@ -387,27 +521,146 @@ function createSeedIso() {
   fs.rmSync(seedIso, { force: true })
   const userData = path.join(seedDir, "user-data")
   const metaData = path.join(seedDir, "meta-data")
-  if (which("cloud-localds")) {
-    run("cloud-localds", [seedIso, userData, metaData])
-    return
-  }
+  const hasBackgrounds = fs.existsSync(seedBackgroundDir)
+  const graftArgs = hasBackgrounds
+    ? ["-graft-points", `user-data=${userData}`, `meta-data=${metaData}`, `backgrounds=${seedBackgroundDir}`]
+    : [userData, metaData]
   if (which("genisoimage")) {
-    run("genisoimage", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", userData, metaData])
+    run("genisoimage", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
   if (which("mkisofs")) {
-    run("mkisofs", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", userData, metaData])
+    run("mkisofs", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
   if (which("xorriso")) {
-    run("xorriso", ["-as", "mkisofs", "-output", seedIso, "-volid", "cidata", "-joliet", "-rock", userData, metaData])
+    run("xorriso", ["-as", "mkisofs", "-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
   if (process.platform === "darwin" && which("hdiutil")) {
     run("hdiutil", ["makehybrid", "-o", seedIso, "-iso", "-joliet", "-default-volume-name", "cidata", seedDir])
     return
   }
+  if (!hasBackgrounds && which("cloud-localds")) {
+    run("cloud-localds", [seedIso, userData, metaData])
+    return
+  }
   throw new Error("Cannot create cloud-init seed ISO. Install cloud-image-utils, genisoimage, mkisofs, xorriso, or run on macOS with hdiutil.")
+}
+
+function qemuSystemBinary() {
+  const name = arch === "arm64" ? "qemu-system-aarch64" : "qemu-system-x86_64"
+  return which(name)
+}
+
+async function initializeVmImage() {
+  if (skipInitialize) {
+    console.log("Skipping VM initialization because --skip-init or WORKTOPER_VM_SKIP_INIT=1 was set.")
+    return
+  }
+  const qemu = qemuSystemBinary()
+  if (!qemu) throw new Error("qemu-system is required to initialize the VM image.")
+  const sshPort = await getFreePort()
+  const serialPort = await getFreePort()
+  const accel = process.platform === "darwin" ? ["-accel", "hvf", "-accel", "tcg"] : ["-accel", "tcg"]
+  const args = [
+    ...accel,
+    "-name", "WorkToper Agent OS Image Initializer",
+    "-m", String(process.env.WORKTOPER_VM_INIT_MEMORY || 4096),
+    "-smp", String(process.env.WORKTOPER_VM_INIT_CPUS || Math.max(2, Math.min(os.cpus().length, 4))),
+    "-machine", "q35",
+    "-cpu", process.env.WORKTOPER_QEMU_CPU || "max",
+    "-display", "none",
+    "-monitor", "none",
+    "-vga", "std",
+    "-device", "virtio-rng-pci",
+    "-drive", `file=${vmImage},if=virtio,format=qcow2,cache=writeback,discard=unmap`,
+    "-drive", `file=${seedIso},format=raw,if=virtio,media=cdrom,readonly=on`,
+    "-netdev", `user,id=net0,hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
+    "-device", "virtio-net-pci,netdev=net0",
+    "-serial", `tcp:127.0.0.1:${serialPort},server=on,wait=off,nodelay=on`,
+  ]
+  console.log(`Initializing VM image with cloud-init. SSH port: ${sshPort}`)
+  const child = spawn(qemu, args, { stdio: ["ignore", "ignore", "pipe"] })
+  let stderr = ""
+  let serialLog = ""
+  let serialSocket = null
+  let cloudInitSucceeded = false
+  let desktopImageReady = false
+  let exitCode = null
+  let exitSignal = null
+  let lastLog = Date.now()
+  child.stderr.on("data", (chunk) => {
+    const text = chunk.toString("utf8")
+    stderr += text
+    if (/error|failed|lock/i.test(text)) process.stderr.write(text)
+  })
+  const connectSerial = () => {
+    if (child.exitCode !== null || serialSocket) return
+    const socket = net.createConnection({ host: "127.0.0.1", port: serialPort })
+    socket.on("connect", () => {
+      serialSocket = socket
+      console.log("Connected to VM initialization serial console.")
+    })
+    socket.on("data", (chunk) => {
+      const text = chunk.toString("utf8")
+      serialLog += text
+      if (serialLog.length > 1_000_000) serialLog = serialLog.slice(-800_000)
+      if (/WorkToper Agent OS Debian desktop is ready/i.test(text)) cloudInitSucceeded = true
+      if (/WORKTOPER_DESKTOP_IMAGE_READY/.test(text)) desktopImageReady = true
+    })
+    socket.on("error", () => {
+      socket.destroy()
+      if (child.exitCode === null) setTimeout(connectSerial, 500)
+    })
+    socket.on("close", () => {
+      if (serialSocket === socket) serialSocket = null
+      if (child.exitCode === null) setTimeout(connectSerial, 500)
+    })
+  }
+  setTimeout(connectSerial, 500)
+  try {
+    const timeoutMs = Number(process.env.WORKTOPER_VM_INIT_TIMEOUT_MS || 1800000)
+    const stopped = await new Promise((resolve) => {
+      const heartbeat = setInterval(() => {
+        if (Date.now() - lastLog >= 30000) {
+          lastLog = Date.now()
+          console.log("Waiting for cloud-init to finish image initialization...")
+        }
+      }, 5000)
+      const timer = setTimeout(() => resolve(false), timeoutMs)
+      child.once("exit", (code, signal) => {
+        exitCode = code
+        exitSignal = signal
+        clearInterval(heartbeat)
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
+    if (!stopped) {
+      child.kill("SIGTERM")
+      await sleep(3000)
+      if (!child.killed) child.kill("SIGKILL")
+      throw new Error(`Timed out waiting for cloud-init image initialization.\n${stderr}`)
+    }
+    serialSocket?.destroy()
+    const combinedLog = `${stderr}\n${serialLog}`
+    const markerComplete = cloudInitSucceeded && desktopImageReady
+    const sawPoweroff = /reboot:\s*Power down|Powering off|systemd-shutdown/i.test(combinedLog)
+    const knownConfigFailure = /Failed loading yaml blob|Invalid format at line|could not find expected ':'|cloud-init\[[^\]]+\]: .*Traceback/i.test(combinedLog)
+    const qemuFailed = exitCode !== 0 && !sawPoweroff
+    if (!markerComplete && (knownConfigFailure || qemuFailed || !sawPoweroff)) {
+      throw new Error(`VM image initialization did not complete cleanly. Refusing to write initialized marker. QEMU exit: ${exitCode ?? "null"}${exitSignal ? ` signal ${exitSignal}` : ""}\n${stderr}\n${serialLog.slice(-12000)}`)
+    }
+    if (!markerComplete) {
+      console.warn("VM powered off after initialization, but the serial completion marker was not captured. Accepting the initialized image.")
+    }
+    console.log("cloud-init finished and VM powered off.")
+  } catch (error) {
+    serialSocket?.destroy()
+    child.kill("SIGTERM")
+    throw error
+  }
 }
 
 async function main() {
@@ -424,14 +677,26 @@ async function main() {
   } else {
     console.log(`Using cached base image: ${baseImage}`)
   }
+  if (forceRebuild && fs.existsSync(vmImage)) {
+    fs.rmSync(vmImage, { force: true })
+    fs.rmSync(initializedMarker, { force: true })
+    console.log(`Removed existing VM disk for rebuild: ${vmImage}`)
+  }
   if (!fs.existsSync(vmImage)) {
     run("qemu-img", ["convert", "-O", "qcow2", baseImage, vmImage])
     run("qemu-img", ["resize", vmImage, process.env.WORKTOPER_VM_SIZE || "32G"])
+    fs.rmSync(initializedMarker, { force: true })
   } else {
     console.log(`Using existing VM disk: ${vmImage}`)
   }
   writeSeedFiles()
   createSeedIso()
+  if (!fs.existsSync(initializedMarker)) {
+    await initializeVmImage()
+    fs.writeFileSync(initializedMarker, `initialized=${new Date().toISOString()}\n`)
+  } else {
+    console.log(`Using initialized VM marker: ${initializedMarker}`)
+  }
   console.log(`\nWorkToper VM assets are ready:
   Disk: ${vmImage}
   Seed: ${seedIso}

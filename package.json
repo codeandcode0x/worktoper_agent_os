@@ -63,6 +63,7 @@
       "app/**/*",
       "components/**/*",
       "desktop/**/*",
+      "bg/**/*",
       "lib/**/*",
       "out/**/*",
       "public/**/*",

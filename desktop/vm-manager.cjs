@@ -250,11 +250,22 @@ function resolveVmImage(app, arch = "x64") {
 
 function resolveSeedImage(app, arch = "x64") {
   if (process.env.WORKTOPER_VM_SEED) return process.env.WORKTOPER_VM_SEED
+  const userVmDir = path.join(app.getPath("userData"), "vm")
+  const initializedMarker = path.join(userVmDir, `worktoper-agent-os-${arch}.initialized`)
+  if (fileExists(initializedMarker)) return ""
   const candidates = [
-    path.join(app.getPath("userData"), "vm", `seed-${arch}.iso`),
+    path.join(userVmDir, `seed-${arch}.iso`),
     ...getRuntimeRoots(app).map((runtimeRoot) => path.join(runtimeRoot, "images", `seed-${arch}.iso`)),
   ]
   return candidates.find(fileExists) || ""
+}
+
+function resolveBackgroundDirectory(app) {
+  const candidates = [
+    path.join(getResourcesRoot(app), "bg"),
+    path.join(app.getAppPath(), "bg"),
+  ]
+  return candidates.find((candidate) => fileExists(path.join(candidate, "Alchemy-5.png"))) || ""
 }
 
 function getAccelArgs() {
@@ -396,7 +407,7 @@ function getDisplayConfig({ vncTcpPort, vncWebSocketPort }) {
   }
 }
 
-function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs, sharedDirectory }) {
+function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs, sharedDirectory, backgroundDirectory }) {
   const hostForwards = [
     `hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
     `hostfwd=tcp:127.0.0.1:${vncTcpPort}-:5900`,
@@ -429,6 +440,9 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb,
   }
   if (sharedDirectory && fileExists(sharedDirectory)) {
     args.push("-virtfs", `local,path=${sharedDirectory},mount_tag=worktoper_share,security_model=mapped-xattr,id=worktoper_share`)
+  }
+  if (backgroundDirectory) {
+    args.push("-virtfs", `local,path=${backgroundDirectory},mount_tag=worktoper_bg,security_model=mapped-xattr,readonly=on,id=worktoper_bg`)
   }
   if (seed) args.push("-drive", `file=${seed},format=raw,if=virtio,media=cdrom,readonly=on`)
   return args
@@ -467,6 +481,7 @@ class VmManager {
     this.pendingLaunches = []
     this.vncProxyServer = null
     this.vncTcpPort = 0
+    this.sshPort = 0
     this.sharedDirectory = ""
     this.pendingDesktopSize = null
     this.resizeTimer = null
@@ -515,6 +530,7 @@ class VmManager {
     const [serialPort, sshPort, vncTcpPort, vncWebSocketPort] = await Promise.all([getFreePort(), getFreePort(), getFreePort(), getFreePort()])
     const display = getDisplayConfig({ vncTcpPort, vncWebSocketPort })
     this.vncTcpPort = vncTcpPort
+    this.sshPort = sshPort
     this.vncProxyServer?.close()
     this.vncProxyServer = createVncWebSocketProxy({
       listenPort: vncWebSocketPort,
@@ -527,8 +543,9 @@ class VmManager {
     const memoryMb = Number(process.env.WORKTOPER_VM_MEMORY || settings.memoryMb || 4096)
     const cpus = Number(process.env.WORKTOPER_VM_CPUS || settings.cpus || Math.max(2, Math.min(os.cpus().length, 4)))
     const sharedDirectory = typeof settings.sharedDirectory === "string" && fileExists(settings.sharedDirectory) ? settings.sharedDirectory : ""
+    const backgroundDirectory = resolveBackgroundDirectory(this.app)
     this.sharedDirectory = sharedDirectory
-    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs: display.args, sharedDirectory })
+    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs: display.args, sharedDirectory, backgroundDirectory })
 
     this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
@@ -578,6 +595,7 @@ class VmManager {
       this.vncProxyServer?.close()
       this.vncProxyServer = null
       this.vncTcpPort = 0
+      this.sshPort = 0
       this.update({ phase: code === 0 ? "idle" : "error", detail: this.lastErrorDetail || `Linux VM 已退出: ${signal || code}`, cpuActive: false, diskActive: false, network: "disconnected" })
     })
 
@@ -719,6 +737,10 @@ class VmManager {
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Desktop /home/worktoper/Projects",
       "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config /home/worktoper/.config/autostart /home/worktoper/.config/xfce4 /home/worktoper/.config/xfce4/xfconf /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
       ...sharedDirectoryCommands,
+      "mkdir -p /usr/share/backgrounds/worktoper /usr/share/xfce4/backdrops /mnt/worktoper-bg",
+      "mountpoint -q /mnt/worktoper-bg || mount -t 9p -o trans=virtio,version=9p2000.L,ro worktoper_bg /mnt/worktoper-bg >/dev/null 2>&1 || true",
+      "for file in /mnt/worktoper-bg/* /var/lib/cloud/seed/nocloud/backgrounds/* /var/lib/cloud/seed/nocloud-net/backgrounds/* /media/cidata/backgrounds/*; do [ -f \"$file\" ] || continue; case \"$file\" in *.jpg|*.jpeg|*.png|*.webp|*.JPG|*.JPEG|*.PNG|*.WEBP) cp -f \"$file\" /usr/share/backgrounds/worktoper/ ;; esac; done",
+      "for file in /usr/share/backgrounds/worktoper/*; do [ -f \"$file\" ] || continue; chmod 0644 \"$file\" 2>/dev/null || true; ln -sfn \"$file\" \"/usr/share/xfce4/backdrops/$(basename \"$file\")\" 2>/dev/null || true; done",
       "cat >/usr/local/sbin/worktoper-install-vscode <<'WORKTOPER_INSTALL_VSCODE'",
       "#!/bin/sh",
       "set -eu",
@@ -749,10 +771,15 @@ class VmManager {
       "cat >/usr/local/sbin/worktoper-install-layan-theme <<'WORKTOPER_INSTALL_LAYAN'",
       "#!/bin/sh",
       "set -eu",
-      "theme_dir=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' | head -n 1 2>/dev/null || true)",
-      "if [ -n \"$theme_dir\" ]; then exit 0; fi",
-      "DEBIAN_FRONTEND=noninteractive apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc",
+      "packages='git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc papirus-icon-theme fonts-noto fonts-noto-cjk fonts-noto-color-emoji librsvg2-common'",
+      "missing=''",
+      "for package in $packages; do",
+      "  dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null | grep -q 'install ok installed' || missing=\"$missing $package\"",
+      "done",
+      "if [ -n \"$missing\" ]; then",
+      "  DEBIAN_FRONTEND=noninteractive apt-get update",
+      "  DEBIAN_FRONTEND=noninteractive apt-get install -y $missing",
+      "fi",
       "install -d -m 0755 /opt/worktoper",
       "if [ -d /opt/worktoper/Layan-gtk-theme/.git ]; then",
       "  git -C /opt/worktoper/Layan-gtk-theme pull --ff-only",
@@ -769,20 +796,32 @@ class VmManager {
       "export XDG_RUNTIME_DIR=/run/user/1000",
       "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
       "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
-      "theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' -printf '%f\\n' | head -n 1 2>/dev/null || true)",
+      "theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*Solid*' -printf '%f\\n' | head -n 1 2>/dev/null || true)",
+      "[ -n \"$theme_name\" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*Dark*' -printf '%f\\n' | head -n 1 2>/dev/null || true)",
       "[ -n \"$theme_name\" ] || theme_name=$(find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' -printf '%f\\n' | head -n 1 2>/dev/null || true)",
+      "icon_theme=Papirus-Dark",
+      "[ -d /usr/share/icons/$icon_theme ] || icon_theme=Adwaita",
       "if [ -z \"$theme_name\" ]; then",
       "  exit 1",
       "fi",
       "theme_path=/usr/share/themes/$theme_name",
+      "wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png",
       "mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
+      "if [ ! -f \"$wallpaper\" ]; then",
+      "  echo \"WorkToper background missing: $wallpaper\" >&2",
+      "fi",
       "cat >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<EOF",
       "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
       "",
       "<channel name=\"xsettings\" version=\"1.0\">",
       "  <property name=\"Net\" type=\"empty\">",
       "    <property name=\"ThemeName\" type=\"string\" value=\"$theme_name\"/>",
-      "    <property name=\"IconThemeName\" type=\"string\" value=\"Adwaita\"/>",
+      "    <property name=\"IconThemeName\" type=\"string\" value=\"$icon_theme\"/>",
+      "  </property>",
+      "  <property name=\"Gtk\" type=\"empty\">",
+      "    <property name=\"FontName\" type=\"string\" value=\"Noto Sans 10\"/>",
+      "    <property name=\"MonospaceFontName\" type=\"string\" value=\"Noto Sans Mono 10\"/>",
+      "    <property name=\"DecorationLayout\" type=\"string\" value=\"menu:minimize,maximize,close\"/>",
       "  </property>",
       "</channel>",
       "EOF",
@@ -799,16 +838,32 @@ class VmManager {
       "xfconf-query -c xfwm4 -p /general/theme -r >/dev/null 2>&1 || true",
       "xfconf-query -c xsettings -p /Net/ThemeName -n -t string -s \"$theme_name\" >/dev/null 2>&1 || true",
       "xfconf-query -c xfwm4 -p /general/theme -n -t string -s \"$theme_name\" >/dev/null 2>&1 || true",
-      "xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s Adwaita >/dev/null 2>&1 || true",
+      "xfconf-query -c xsettings -p /Net/IconThemeName -n -t string -s \"$icon_theme\" >/dev/null 2>&1 || true",
+      "xfconf-query -c xsettings -p /Gtk/DecorationLayout -n -t string -s 'menu:minimize,maximize,close' >/dev/null 2>&1 || true",
+      "xfconf-query -c xsettings -p /Gtk/FontName -n -t string -s 'Noto Sans 10' >/dev/null 2>&1 || true",
+      "xfconf-query -c xsettings -p /Gtk/MonospaceFontName -n -t string -s 'Noto Sans Mono 10' >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/use_compositing -n -t bool -s true >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/frame_opacity -n -t int -s 100 >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/inactive_opacity -n -t int -s 94 >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/show_frame_shadow -n -t bool -s true >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/show_popup_shadow -n -t bool -s true >/dev/null 2>&1 || true",
+      "xfconf-query -c xfwm4 -p /general/button_layout -n -t string -s 'O|HMC' >/dev/null 2>&1 || true",
+      "for monitor in monitor0 monitorVirtual-1 monitorVirtual1 monitorVNC-0 monitorDefault; do",
+      "  base=/backdrop/screen0/$monitor/workspace0",
+      "  xfconf-query -c xfce4-desktop -p $base/last-image -n -t string -s \"$wallpaper\" >/dev/null 2>&1 || true",
+      "  xfconf-query -c xfce4-desktop -p $base/image-path -n -t string -s \"$wallpaper\" >/dev/null 2>&1 || true",
+      "  xfconf-query -c xfce4-desktop -p $base/image-style -n -t int -s 5 >/dev/null 2>&1 || true",
+      "done",
+      "for property in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/last-image$|/image-path$' || true); do xfconf-query -c xfce4-desktop -p \"$property\" -s \"$wallpaper\" >/dev/null 2>&1 || true; done",
+      "for property in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/image-style$' || true); do xfconf-query -c xfce4-desktop -p \"$property\" -s 5 >/dev/null 2>&1 || true; done",
       "mkdir -p /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0",
-      "printf '%s\\n' '[Settings]' \"gtk-theme-name=$theme_name\" 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini",
+      "printf '%s\\n' '[Settings]' \"gtk-theme-name=$theme_name\" \"gtk-icon-theme-name=$icon_theme\" 'gtk-font-name=Noto Sans 10' 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini",
+      "rm -f /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml",
       "ln -sfn \"$theme_path/gtk-4.0/assets\" /home/worktoper/.config/gtk-4.0/assets 2>/dev/null || true",
       "ln -sfn \"$theme_path/gtk-4.0/gtk.css\" /home/worktoper/.config/gtk-4.0/gtk.css 2>/dev/null || true",
       "ln -sfn \"$theme_path/gtk-4.0/gtk-dark.css\" /home/worktoper/.config/gtk-4.0/gtk-dark.css 2>/dev/null || true",
       "chown -R worktoper:worktoper /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0 /home/worktoper/.config/xfce4 2>/dev/null || true",
-      "pkill -u worktoper -x xfsettingsd >/dev/null 2>&1 || true",
-      "nohup xfsettingsd --replace >/tmp/worktoper-xfsettingsd.log 2>&1 &",
-      "xfwm4 --replace >/tmp/worktoper-xfwm4-theme.log 2>&1 &",
+      "xfdesktop --reload >/dev/null 2>&1 || true",
       "WORKTOPER_APPLY_LAYAN",
       "chmod 0755 /usr/local/sbin/worktoper-install-layan-theme /usr/local/bin/worktoper-apply-layan-theme",
       "cat >/usr/local/bin/worktoper-open-browser <<'WORKTOPER_BROWSER'",
@@ -922,10 +977,13 @@ class VmManager {
       "if ! pgrep -u worktoper -x xfce4-session >/dev/null 2>&1; then",
       "  echo '$ startxfce4 (fallback desktop session)'",
       "  runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup dbus-run-session -- startxfce4 >/tmp/worktoper-xfce.log 2>&1 &'",
+      "  sleep 2",
       "fi",
-      "pgrep -u worktoper -x xfce4-panel >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfce4-panel >/tmp/worktoper-xfce-panel.log 2>&1 &'",
-      "pgrep -u worktoper -x xfdesktop >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfdesktop >/tmp/worktoper-xfdesktop.log 2>&1 &'",
-      "pgrep -u worktoper -x xfwm4 >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfwm4 --replace >/tmp/worktoper-xfwm4.log 2>&1 &'",
+      "if ! pgrep -u worktoper -x xfce4-session >/dev/null 2>&1; then",
+      "  pgrep -u worktoper -x xfce4-panel >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfce4-panel >/tmp/worktoper-xfce-panel.log 2>&1 &'",
+      "  pgrep -u worktoper -x xfdesktop >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfdesktop >/tmp/worktoper-xfdesktop.log 2>&1 &'",
+      "  pgrep -u worktoper -x xfwm4 >/dev/null 2>&1 || runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; nohup xfwm4 >/tmp/worktoper-xfwm4.log 2>&1 &'",
+      "fi",
     ].join("\n")
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })
     const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
@@ -986,9 +1044,7 @@ class VmManager {
       "echo '$ Xorg logs'",
       "tail -n 120 /var/log/Xorg.0.log 2>/dev/null || true",
       "echo '$ xsession errors'",
-      "tail -n 80 /home/worktoper/.xsession-errors 2>/dev/null || true",
-      "echo '$ cloud-init status'",
-      "cloud-init status --long 2>/dev/null || true",
+      "tail -n 120 /home/worktoper/.xsession-errors 2>/dev/null | grep -Ev 'libxfce4kbd-private-WARNING.*Failed to grab keycode|Another clipboard manager is already running|xfce4-panel: There is already a running instance|ICE I/O Error|Disconnected from session manager|Failed to connect to session manager' | tail -n 80 || true",
     ].join("; ")
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })
     const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()

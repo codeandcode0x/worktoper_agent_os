@@ -48,6 +48,8 @@ declare global {
       setSettings: (settings: VmSettings) => Promise<VmSettings>
       chooseSharedDirectory: () => Promise<{ canceled: boolean; path: string }>
       lock: () => Promise<{ ok: boolean }>
+      readClipboardText: () => Promise<{ text: string }>
+      writeClipboardText: (text: string) => Promise<{ ok: boolean }>
       restartApp: () => Promise<{ ok: boolean }>
       closeApp: () => Promise<{ ok: boolean }>
       onState: (callback: (snapshot: RuntimeSnapshot) => void) => () => void
@@ -204,6 +206,17 @@ class DesktopLinuxRuntime {
   async lock() {
     if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
     return window.worktoperVM.lock()
+  }
+
+  async readClipboardText() {
+    if (!window.worktoperVM?.readClipboardText) return ""
+    const result = await window.worktoperVM.readClipboardText()
+    return typeof result?.text === "string" ? result.text : ""
+  }
+
+  async writeClipboardText(text: string) {
+    if (!window.worktoperVM?.writeClipboardText) return
+    await window.worktoperVM.writeClipboardText(text)
   }
 
   async restartApp() {
