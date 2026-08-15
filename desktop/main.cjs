@@ -157,8 +157,8 @@ ipcMain.handle("worktoper:vm:start", async () => {
   return vmManager.start()
 })
 
-ipcMain.handle("worktoper:vm:stop", () => {
-  vmManager?.stop()
+ipcMain.handle("worktoper:vm:stop", async () => {
+  await vmManager?.stop()
   return { ok: true }
 })
 

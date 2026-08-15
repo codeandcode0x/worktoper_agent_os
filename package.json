@@ -64,6 +64,7 @@
       "components/**/*",
       "desktop/**/*",
       "bg/**/*",
+      "images/bg/**/*",
       "lib/**/*",
       "out/**/*",
       "public/**/*",

@@ -23,24 +23,24 @@
 
 :root {
   color-scheme: dark;
-  --font-geist: Inter, "Segoe UI", Arial, sans-serif;
-  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --font-noto-sc: "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-geist: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
+  --font-geist-mono: "SFMono-Regular", "SF Mono", "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --font-noto-sc: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
   --background: #111317;
-  --foreground: #edf0e8;
-  --card: #1a1d22;
-  --card-foreground: #edf0e8;
-  --muted: #25292f;
-  --muted-foreground: #939b9a;
-  --primary: #d4a854;
-  --primary-foreground: #111317;
-  --border: #343a40;
-  --ring: #d4a854;
+  --foreground: #eef6ff;
+  --card: #171c24;
+  --card-foreground: #eef6ff;
+  --muted: #202a37;
+  --muted-foreground: #9ba9b8;
+  --primary: #3b82f6;
+  --primary-foreground: #f8fbff;
+  --border: #24476f;
+  --ring: #60a5fa;
 }
 
 * { box-sizing: border-box; border-color: var(--border); }
 html { background: var(--background); }
-body { margin: 0; min-width: 320px; overflow: hidden; background: var(--background); color: var(--foreground); }
+body { margin: 0; min-width: 320px; overflow: hidden; background: var(--background); color: var(--foreground); font-family: var(--font-geist), var(--font-noto-sc), sans-serif; font-feature-settings: "rlig" 1, "calt" 1; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 button, input { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
@@ -129,37 +129,40 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .linux-desktop-interactive .desktop { position: fixed; inset: 0; top: 0; width: 100vw; height: 100svh; min-height: 0; }
 .linux-desktop-interactive .embedded-desktop-surface { position: fixed; inset: 0; top: 0; z-index: 200; width: 100vw; height: 100svh; }
 .linux-desktop-interactive .embedded-vnc-host { inset: 0; top: 0; width: 100vw; height: 100svh; }
-.desktop-control-trigger { position: fixed; z-index: 260; top: 10px; left: 50%; display: grid; width: 44px; height: 44px; place-items: center; transform: translateX(-50%); border: 1px solid color-mix(in srgb, var(--foreground) 32%, transparent); border-radius: 50%; background: color-mix(in srgb, #050607 68%, transparent); color: var(--foreground); cursor: pointer; backdrop-filter: blur(14px); box-shadow: 0 10px 28px color-mix(in srgb, #000 36%, transparent); }
-.desktop-control-trigger:hover { border-color: color-mix(in srgb, var(--primary) 60%, transparent); color: var(--primary); }
+.desktop-control-trigger { position: fixed; z-index: 260; top: 10px; left: 50%; display: grid; width: 44px; height: 44px; place-items: center; transform: translateX(-50%); border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 82%, transparent); cursor: pointer; filter: drop-shadow(0 8px 18px color-mix(in srgb, #000 55%, transparent)); }
+.desktop-control-trigger:hover { color: var(--primary); transform: translateX(-50%) translateY(1px); }
 .desktop-control-trigger svg { width: 22px; height: 22px; }
-.desktop-control-overlay { position: fixed; inset: 0; z-index: 420; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; padding: 72px 32px 36px; background: color-mix(in srgb, #050607 88%, transparent); backdrop-filter: blur(16px); }
-.desktop-control-close { position: fixed; top: 20px; right: 22px; display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid color-mix(in srgb, var(--foreground) 24%, transparent); border-radius: 22px; background: transparent; color: var(--foreground); cursor: pointer; }
-.desktop-control-close:hover { border-color: var(--primary); color: var(--primary); }
-.desktop-control-actions { display: grid; width: min(880px, 100%); grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
-.desktop-control-actions > button { display: flex; min-height: 132px; flex-direction: column; align-items: center; justify-content: center; gap: 14px; border: 1px solid color-mix(in srgb, var(--foreground) 32%, transparent); border-radius: 26px; background: color-mix(in srgb, var(--card) 32%, transparent); color: var(--foreground); cursor: pointer; font-size: 18px; font-weight: 650; box-shadow: inset 0 1px color-mix(in srgb, var(--foreground) 8%, transparent); }
-.desktop-control-actions > button:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 9%, transparent); color: var(--primary); }
-.desktop-control-actions svg { width: 34px; height: 34px; stroke-width: 1.35; }
-.desktop-settings-panel { display: grid; width: min(760px, 100%); gap: 14px; padding: 22px; border: 1px solid color-mix(in srgb, var(--foreground) 24%, transparent); border-radius: 22px; background: color-mix(in srgb, var(--card) 72%, transparent); }
-.desktop-settings-panel label { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 14px; color: var(--muted-foreground); font-size: 13px; }
-.desktop-settings-panel input { width: 100%; min-width: 0; height: 42px; border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent); border-radius: 14px; background: color-mix(in srgb, #050607 65%, transparent); color: var(--foreground); padding: 0 12px; }
-.desktop-share-field > div { display: flex; min-width: 0; gap: 8px; }
-.desktop-share-field button { display: grid; width: 44px; height: 42px; flex: none; place-items: center; border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent); border-radius: 14px; background: transparent; color: var(--foreground); cursor: pointer; }
-.desktop-share-field button:hover { border-color: var(--primary); color: var(--primary); }
+.desktop-control-overlay { position: fixed; inset: 0; z-index: 420; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 72px 32px 36px; background: color-mix(in srgb, #050607 60%, transparent); backdrop-filter: blur(14px); }
+.desktop-control-close { position: fixed; top: 20px; right: 22px; display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 78%, transparent); cursor: pointer; }
+.desktop-control-close:hover { color: var(--primary); }
+.desktop-control-actions { display: grid; width: min(620px, 100%); grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(24px, 6vw, 56px); align-items: center; justify-items: center; }
+.desktop-control-actions > button { display: grid; width: 82px; height: 82px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 86%, transparent); cursor: pointer; }
+.desktop-control-actions > button:hover { color: var(--primary); transform: translateY(-2px); }
+.desktop-control-actions svg { width: 42px; height: 42px; stroke-width: 1.25; }
+.desktop-settings-panel { display: grid; width: min(720px, 100%); gap: 18px; padding: 26px 30px; border: 0; border-radius: 30px; background: color-mix(in srgb, var(--card) 42%, transparent); box-shadow: 0 24px 80px color-mix(in srgb, #000 34%, transparent); }
+.desktop-settings-panel label { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 18px; color: color-mix(in srgb, var(--foreground) 72%, transparent); font-size: 13px; }
+.desktop-settings-panel input { width: 100%; min-width: 0; height: 44px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--primary) 46%, transparent); border-radius: 0; background: transparent; color: var(--foreground); padding: 0 2px; }
+.desktop-settings-panel input:focus { border-bottom-color: var(--primary); outline: 0; }
+.desktop-share-field > div { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.desktop-share-field button { display: grid; width: 44px; height: 44px; flex: none; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 78%, transparent); cursor: pointer; }
+.desktop-share-field button:hover { color: var(--primary); }
 .desktop-settings-panel footer { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
 .desktop-settings-panel footer span { flex: 1; min-width: 0; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.desktop-settings-panel footer button { min-width: 96px; height: 42px; border: 1px solid var(--primary); border-radius: 14px; background: transparent; color: var(--primary); cursor: pointer; font-weight: 650; }
-.desktop-settings-panel footer button:hover { background: color-mix(in srgb, var(--primary) 12%, transparent); }
-.app-lock-overlay { position: fixed; inset: 0; z-index: 520; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 28px; background: color-mix(in srgb, #050607 92%, transparent); backdrop-filter: blur(18px); }
-.app-lock-clock { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--foreground); text-align: center; }
+.desktop-settings-panel footer button { min-width: 86px; height: 42px; border: 0; border-radius: 999px; background: transparent; color: var(--primary); cursor: pointer; font-weight: 700; }
+.desktop-settings-panel footer button:hover { color: var(--primary-foreground); text-shadow: 0 0 18px color-mix(in srgb, var(--primary) 56%, transparent); }
+.desktop-settings-panel footer button:disabled { cursor: default; opacity: .55; }
+.app-lock-overlay { position: fixed; inset: 0; z-index: 520; display: block; padding: 28px; background: color-mix(in srgb, #050607 50%, transparent); backdrop-filter: blur(8px); }
+.app-lock-clock { position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--foreground); text-align: center; transform: translate(-50%, -58%); }
 .app-lock-clock strong { font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: clamp(58px, 12vw, 158px); font-weight: 500; line-height: .9; letter-spacing: 0; }
 .app-lock-clock span { color: var(--muted-foreground); font-size: clamp(15px, 2vw, 24px); }
-.app-lock-primary { display: flex; width: 150px; height: 150px; flex-direction: column; align-items: center; justify-content: center; gap: 12px; border: 1px solid color-mix(in srgb, var(--foreground) 28%, transparent); border-radius: 75px; background: color-mix(in srgb, var(--card) 34%, transparent); color: var(--foreground); cursor: pointer; font-size: 18px; font-weight: 650; }
-.app-lock-primary:hover { border-color: var(--primary); color: var(--primary); }
-.app-lock-primary svg { width: 36px; height: 36px; stroke-width: 1.35; }
-.app-lock-form { display: grid; width: min(360px, 100%); gap: 14px; justify-items: center; padding: 28px; border: 1px solid color-mix(in srgb, var(--foreground) 24%, transparent); border-radius: 26px; background: color-mix(in srgb, var(--card) 74%, transparent); }
-.app-lock-form > svg { width: 38px; height: 38px; color: var(--primary); stroke-width: 1.35; }
-.app-lock-form input { width: 100%; height: 46px; border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent); border-radius: 16px; background: color-mix(in srgb, #050607 65%, transparent); color: var(--foreground); padding: 0 14px; text-align: center; }
-.app-lock-form button { width: 100%; height: 46px; border: 1px solid var(--primary); border-radius: 16px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); cursor: pointer; font-weight: 650; }
+.app-lock-primary { position: absolute; left: 50%; top: calc(50% + clamp(104px, 12vw, 164px)); display: grid; width: 74px; height: 74px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--primary) 88%, var(--foreground)); cursor: pointer; transform: translateX(-50%); filter: drop-shadow(0 10px 26px color-mix(in srgb, var(--primary) 24%, transparent)); }
+.app-lock-primary:hover { color: var(--primary-foreground); transform: translateX(-50%) translateY(-2px); }
+.app-lock-primary svg { width: 48px; height: 48px; stroke-width: 1.2; }
+.app-lock-form { position: absolute; left: 50%; top: calc(50% + clamp(112px, 12vw, 170px)); display: grid; width: min(340px, calc(100% - 56px)); gap: 14px; justify-items: center; padding: 0; border: 0; background: transparent; transform: translateX(-50%); }
+.app-lock-form input { width: 100%; height: 48px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--primary) 60%, transparent); border-radius: 0; background: transparent; color: var(--foreground); padding: 0 2px; text-align: center; }
+.app-lock-form input:focus { border-bottom-color: var(--primary); outline: 0; }
+.app-lock-form button { width: auto; height: 36px; padding: 0 18px; border: 0; border-radius: 999px; background: transparent; color: var(--primary); cursor: pointer; font-weight: 700; }
+.app-lock-form button:hover { color: var(--primary-foreground); text-shadow: 0 0 18px color-mix(in srgb, var(--primary) 60%, transparent); }
 .app-lock-form span { min-height: 16px; color: var(--muted-foreground); font-size: 12px; }
 .boot-screen { position: absolute; inset: 0; z-index: 3; display: grid; grid-template-rows: 34px minmax(0, 1fr) 30px; background: #050607; color: var(--foreground); }
 .boot-screen-fullscreen { position: fixed; z-index: 300; grid-template-rows: 48px minmax(0, 1fr) 38px; }

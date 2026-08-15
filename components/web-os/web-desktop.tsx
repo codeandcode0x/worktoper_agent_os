@@ -407,11 +407,16 @@ function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSn
   const [open, setOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<VmSettings>(fallbackSettings)
+  const [savedSettings, setSavedSettings] = useState<VmSettings>(fallbackSettings)
+  const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState("")
 
   useEffect(() => {
     if (!open) return
-    void desktopLinux.getSettings().then(setSettings).catch((error) => {
+    void desktopLinux.getSettings().then((nextSettings) => {
+      setSettings(nextSettings)
+      setSavedSettings(nextSettings)
+    }).catch((error) => {
       setMessage(error instanceof Error ? error.message : "读取设置失败")
     })
   }, [open])
@@ -421,6 +426,17 @@ function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSn
     setSettingsOpen(false)
     setMessage("")
   }, [locked])
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      setOpen(false)
+      setSettingsOpen(false)
+      setMessage("")
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [open])
 
   const updateSettings = (patch: Partial<VmSettings>) => {
     setSettings((current) => ({ ...current, ...patch }))
@@ -435,12 +451,24 @@ function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSn
     }
   }
   const saveSettings = async () => {
+    if (saving) return
+    setSaving(true)
     try {
       const saved = await desktopLinux.setSettings(settings)
       setSettings(saved)
-      setMessage("已保存，重启应用后生效")
+      const vmConfigChanged = saved.cpus !== savedSettings.cpus || saved.memoryMb !== savedSettings.memoryMb || saved.sharedDirectory !== savedSettings.sharedDirectory
+      setSavedSettings(saved)
+      if (vmConfigChanged && runtime.phase !== "idle") {
+        setMessage("已保存，正在重启 Linux VM 以应用设置")
+        await desktopLinux.restartVm()
+        setMessage(saved.sharedDirectory ? "共享目录已挂载到 /home/worktoper/Shared" : "已保存，共享目录已关闭")
+      } else {
+        setMessage("已保存")
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存设置失败")
+    } finally {
+      setSaving(false)
     }
   }
   const lockScreen = async () => {
@@ -456,17 +484,17 @@ function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSn
     {open && <div className="desktop-control-overlay" role="dialog" aria-modal="true" aria-label="系统控制">
       <button className="desktop-control-close" onClick={() => { setOpen(false); setSettingsOpen(false); setMessage("") }} aria-label="关闭系统控制"><X /></button>
       <div className="desktop-control-actions">
-        <button onClick={() => setSettingsOpen((value) => !value)}><Settings /><span>设置</span></button>
-        <button onClick={() => void lockScreen()}><LockKeyhole /><span>锁屏</span></button>
-        <button onClick={() => void desktopLinux.restartApp()}><RefreshCw /><span>重启</span></button>
-        <button onClick={() => void desktopLinux.closeApp()}><Power /><span>关闭</span></button>
+        <button onClick={() => setSettingsOpen((value) => !value)} aria-label="设置" title="设置"><Settings /></button>
+        <button onClick={() => void lockScreen()} aria-label="锁屏" title="锁屏"><LockKeyhole /></button>
+        <button onClick={() => void desktopLinux.restartApp()} aria-label="重启" title="重启"><RefreshCw /></button>
+        <button onClick={() => void desktopLinux.closeApp()} aria-label="关闭" title="关闭"><Power /></button>
       </div>
       {settingsOpen && <section className="desktop-settings-panel" aria-label="Linux 桌面运行设置">
         <label><span>CPU</span><input type="number" min="1" max="32" value={settings.cpus} onChange={(event) => updateSettings({ cpus: Number(event.target.value) })} /></label>
         <label><span>内存 MB</span><input type="number" min="1024" max="32768" step="512" value={settings.memoryMb} onChange={(event) => updateSettings({ memoryMb: Number(event.target.value) })} /></label>
         <label><span>锁屏密码</span><input type="password" value={settings.lockPassword} onChange={(event) => updateSettings({ lockPassword: event.target.value })} placeholder="worktoper" /></label>
         <label className="desktop-share-field"><span>共享目录</span><div><input value={settings.sharedDirectory} onChange={(event) => updateSettings({ sharedDirectory: event.target.value })} placeholder="未设置" /><button onClick={chooseDirectory} aria-label="选择共享目录"><FolderOpen /></button></div></label>
-        <footer><span>{message || `状态：${runtime.detail}`}</span><button onClick={saveSettings}>保存</button></footer>
+        <footer><span>{message || `状态：${runtime.detail}`}</span><button onClick={saveSettings} disabled={saving}>{saving ? "保存中" : "保存"}</button></footer>
       </section>}
     </div>}
   </>
@@ -483,7 +511,7 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
     return () => window.clearInterval(timer)
   }, [])
   const timeText = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(clock)
-  const dateText = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(clock)
+  const dateText = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(clock)
   const unlock = () => {
     if (value === password) {
       setValue("")
@@ -501,9 +529,8 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
   }
   return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label="锁屏">
     <div className="app-lock-clock" aria-label="当前时间"><strong>{timeText}</strong><span>{dateText}</span></div>
-    {!formVisible && <button className="app-lock-primary" onClick={showForm}><LockKeyhole /><span>解锁</span></button>}
+    {!formVisible && <button className="app-lock-primary" onClick={showForm} aria-label="解锁" title="解锁"><LockKeyhole /></button>}
     {formVisible && <form className="app-lock-form" onSubmit={(event) => { event.preventDefault(); unlock() }}>
-      <LockKeyhole />
       <input ref={inputRef} type="password" value={value} onChange={(event) => { setValue(event.target.value); setMessage("") }} placeholder="输入密码" />
       <button type="submit">解锁</button>
       <span>{message || "默认密码 worktoper"}</span>

@@ -28,7 +28,6 @@ const vmImage = path.join(runtimeDir, `worktoper-agent-os-${arch}.qcow2`)
 const seedIso = path.join(runtimeDir, `seed-${arch}.iso`)
 const seedDir = path.join(runtimeDir, `seed-${arch}`)
 const initializedMarker = path.join(runtimeDir, `worktoper-agent-os-${arch}.initialized`)
-const backgroundSourceDir = path.join(root, "bg")
 const seedBackgroundDir = path.join(seedDir, "backgrounds")
 const defaultBackgroundName = "Alchemy-5.png"
 const forceRebuild = process.argv.includes("--force") || process.argv.includes("--rebuild") || process.env.WORKTOPER_VM_REBUILD === "1"
@@ -68,8 +67,20 @@ function which(command) {
   return result.stdout.split(/\r?\n/).find(Boolean) || ""
 }
 
+function resolveBackgroundSourceDir() {
+  const candidates = [
+    path.join(root, "bg"),
+    path.join(root, "images", "bg"),
+  ]
+  return candidates.find((candidate) => {
+    if (!fs.existsSync(candidate)) return false
+    return fs.readdirSync(candidate).some((name) => name.toLowerCase() === defaultBackgroundName.toLowerCase())
+  }) || ""
+}
+
 function copyBackgroundsToSeed() {
   fs.rmSync(seedBackgroundDir, { recursive: true, force: true })
+  const backgroundSourceDir = resolveBackgroundSourceDir()
   if (!fs.existsSync(backgroundSourceDir)) return false
   const files = fs.readdirSync(backgroundSourceDir)
     .filter((name) => /\.(jpe?g|png|webp)$/i.test(name))
@@ -79,7 +90,7 @@ function copyBackgroundsToSeed() {
   for (const file of files) {
     fs.copyFileSync(path.join(backgroundSourceDir, file), path.join(seedBackgroundDir, file))
   }
-  if (!files.includes(defaultBackgroundName)) {
+  if (!files.some((name) => name.toLowerCase() === defaultBackgroundName.toLowerCase())) {
     throw new Error(`Default background is missing: ${path.join(backgroundSourceDir, defaultBackgroundName)}`)
   }
   return true
@@ -300,7 +311,8 @@ write_files:
         exit 1
       fi
       theme_path=/usr/share/themes/$theme_name
-      wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png
+      wallpaper=$(find /usr/share/backgrounds/worktoper -maxdepth 1 -iname 'alchemy-5.png' | head -n 1 2>/dev/null || true)
+      [ -n "$wallpaper" ] || wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png
       mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml
       if [ ! -f "$wallpaper" ]; then
         echo "WorkToper background missing: $wallpaper" >&2
@@ -336,6 +348,49 @@ write_files:
       ln -sfn "$theme_path/gtk-4.0/gtk-dark.css" /home/worktoper/.config/gtk-4.0/gtk-dark.css 2>/dev/null || true
       chown -R worktoper:worktoper /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0 /home/worktoper/.config/xfce4 2>/dev/null || true
       xfdesktop --reload >/dev/null 2>&1 || true
+  - path: /usr/local/bin/worktoper-configure-xfce-panel
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      target=/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml
+      mkdir -p "$target"
+      cat >"$target/xfce4-panel.xml" <<'EOF'
+      <?xml version="1.0" encoding="UTF-8"?>
+
+      <channel name="xfce4-panel" version="1.0">
+        <property name="configver" type="int" value="2"/>
+        <property name="panels" type="array">
+          <value type="int" value="1"/>
+          <property name="panel-1" type="empty">
+            <property name="position" type="string" value="p=10;x=0;y=0"/>
+            <property name="length" type="uint" value="100"/>
+            <property name="position-locked" type="bool" value="true"/>
+            <property name="size" type="uint" value="32"/>
+            <property name="plugin-ids" type="array">
+              <value type="int" value="1"/>
+              <value type="int" value="2"/>
+              <value type="int" value="3"/>
+              <value type="int" value="4"/>
+              <value type="int" value="5"/>
+              <value type="int" value="6"/>
+            </property>
+          </property>
+        </property>
+        <property name="plugins" type="empty">
+          <property name="plugin-1" type="string" value="applicationsmenu"/>
+          <property name="plugin-2" type="string" value="tasklist"/>
+          <property name="plugin-3" type="string" value="separator">
+            <property name="expand" type="bool" value="true"/>
+            <property name="style" type="uint" value="0"/>
+          </property>
+          <property name="plugin-4" type="string" value="pager"/>
+          <property name="plugin-5" type="string" value="clock"/>
+          <property name="plugin-6" type="string" value="actions"/>
+        </property>
+      </channel>
+      EOF
+      chown -R worktoper:worktoper /home/worktoper/.config/xfce4 2>/dev/null || true
   - path: /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
     permissions: "0644"
     content: |
@@ -487,7 +542,7 @@ runcmd:
   - printf '%s\\n' '<?xml version="1.0" encoding="UTF-8"?>' '' '<channel name="xfce4-desktop" version="1.0">' '  <property name="backdrop" type="empty">' '    <property name="screen0" type="empty">' '      <property name="monitor0" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorVirtual-1" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorVirtual1" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '      <property name="monitorDefault" type="empty">' '        <property name="workspace0" type="empty">' '          <property name="last-image" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-path" type="string" value="/usr/share/backgrounds/worktoper/Alchemy-5.png"/>' '          <property name="image-style" type="int" value="5"/>' '        </property>' '      </property>' '    </property>' '  </property>' '</channel>' >/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
   - printf '%s\\n' '[Settings]' 'gtk-icon-theme-name=Papirus-Dark' 'gtk-font-name=Noto Sans 10' >/home/worktoper/.config/gtk-3.0/settings.ini
   - for monitor in monitor0 monitorVirtual-1 monitorVirtual1 monitorVNC-0 monitorDefault; do base=/backdrop/screen0/$monitor/workspace0; xfconf-query -c xfce4-desktop -p $base/last-image -n -t string -s /usr/share/backgrounds/worktoper/Alchemy-5.png >/dev/null 2>&1 || true; xfconf-query -c xfce4-desktop -p $base/image-path -n -t string -s /usr/share/backgrounds/worktoper/Alchemy-5.png >/dev/null 2>&1 || true; xfconf-query -c xfce4-desktop -p $base/image-style -n -t int -s 5 >/dev/null 2>&1 || true; done
-  - rm -f /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+  - /usr/local/bin/worktoper-configure-xfce-panel || true
   - chown -R worktoper:worktoper /home/worktoper/.config
   - systemctl reset-failed lightdm display-manager || true
   - systemctl restart lightdm || systemctl restart display-manager || true

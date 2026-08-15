@@ -69,6 +69,8 @@ const initialSnapshot: RuntimeSnapshot = {
   bootProgress: 0,
 }
 
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
 class DesktopLinuxRuntime {
   private bootPromise: Promise<VmConnection> | null = null
   private connection: VmConnection | null = null
@@ -170,6 +172,12 @@ class DesktopLinuxRuntime {
     this.bootPromise = null
     this.connection = null
     await window.worktoperVM?.stop()
+  }
+
+  async restartVm() {
+    await this.stop()
+    await wait(400)
+    return this.boot()
   }
 
   async write(data: string) {

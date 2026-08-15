@@ -263,9 +263,17 @@ function resolveSeedImage(app, arch = "x64") {
 function resolveBackgroundDirectory(app) {
   const candidates = [
     path.join(getResourcesRoot(app), "bg"),
+    path.join(getResourcesRoot(app), "images", "bg"),
     path.join(app.getAppPath(), "bg"),
+    path.join(app.getAppPath(), "images", "bg"),
   ]
-  return candidates.find((candidate) => fileExists(path.join(candidate, "Alchemy-5.png"))) || ""
+  return candidates.find((candidate) => {
+    try {
+      return fs.readdirSync(candidate).some((name) => name.toLowerCase() === "alchemy-5.png")
+    } catch {
+      return false
+    }
+  }) || ""
 }
 
 function getAccelArgs() {
@@ -439,7 +447,7 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb,
     )
   }
   if (sharedDirectory && fileExists(sharedDirectory)) {
-    args.push("-virtfs", `local,path=${sharedDirectory},mount_tag=worktoper_share,security_model=mapped-xattr,id=worktoper_share`)
+    args.push("-virtfs", `local,path=${sharedDirectory},mount_tag=worktoper_share,security_model=none,id=worktoper_share`)
   }
   if (backgroundDirectory) {
     args.push("-virtfs", `local,path=${backgroundDirectory},mount_tag=worktoper_bg,security_model=mapped-xattr,readonly=on,id=worktoper_bg`)
@@ -454,6 +462,28 @@ function qemuCommandLine(qemu, args) {
 
 function decodeGuestData(value) {
   return value ? Buffer.from(value, "base64").toString("utf8") : ""
+}
+
+function waitForProcessExit(child, timeoutMs = 7000) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
+      resolve(true)
+      return
+    }
+    let settled = false
+    const done = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.off("exit", onExit)
+      child.off("close", onExit)
+      resolve(value)
+    }
+    const onExit = () => done(true)
+    const timer = setTimeout(() => done(false), timeoutMs)
+    child.once("exit", onExit)
+    child.once("close", onExit)
+  })
 }
 
 function findDiskUserHint(disk) {
@@ -564,13 +594,14 @@ class VmManager {
       "",
     ].filter((line) => line !== "").join("\r\n"))
     this.process = spawn(qemu, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
+    const qemuProcess = this.process
     this.shellReady = false
     this.pendingShellWrites = []
     this.desktopReady = false
     this.lastDesktopLog = ""
     this.desktopRepairAttempted = false
-    this.process.stdout.on("data", (chunk) => this.send("worktoper:vm:boot", chunk.toString("utf8")))
-    this.process.stderr.on("data", (chunk) => {
+    qemuProcess.stdout.on("data", (chunk) => this.send("worktoper:vm:boot", chunk.toString("utf8")))
+    qemuProcess.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8")
       this.send("worktoper:vm:boot", text)
       if (/Failed to get "write" lock|Is another process using the image/i.test(text)) {
@@ -580,7 +611,8 @@ class VmManager {
       }
       if (/error|failed|could not/i.test(text)) this.update({ detail: text.trim().slice(0, 180) })
     })
-    this.process.once("exit", (code, signal) => {
+    qemuProcess.once("exit", (code, signal) => {
+      if (this.process !== qemuProcess) return
       this.serial?.destroy()
       this.serial = null
       this.guestAgent?.close()
@@ -720,8 +752,9 @@ class VmManager {
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Shared",
       "if ! mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
       "  echo '$ mount shared directory at /home/worktoper/Shared'",
-      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L worktoper_share /home/worktoper/Shared || true",
+      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,access=client worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=client worktoper_share /home/worktoper/Shared || { echo '[WorkToper] Shared directory mount failed'; dmesg | tail -n 20 || true; }",
       "fi",
+      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then echo '[WorkToper] Shared directory mounted at /home/worktoper/Shared'; fi",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Shared' 'Exec=exo-open --launch FileManager /home/worktoper/Shared' 'Icon=folder' 'Terminal=false' 'Categories=Utility;' > /home/worktoper/Desktop/Shared.desktop",
     ] : [
       "rm -f /home/worktoper/Desktop/Shared.desktop 2>/dev/null || true",
@@ -741,6 +774,52 @@ class VmManager {
       "mountpoint -q /mnt/worktoper-bg || mount -t 9p -o trans=virtio,version=9p2000.L,ro worktoper_bg /mnt/worktoper-bg >/dev/null 2>&1 || true",
       "for file in /mnt/worktoper-bg/* /var/lib/cloud/seed/nocloud/backgrounds/* /var/lib/cloud/seed/nocloud-net/backgrounds/* /media/cidata/backgrounds/*; do [ -f \"$file\" ] || continue; case \"$file\" in *.jpg|*.jpeg|*.png|*.webp|*.JPG|*.JPEG|*.PNG|*.WEBP) cp -f \"$file\" /usr/share/backgrounds/worktoper/ ;; esac; done",
       "for file in /usr/share/backgrounds/worktoper/*; do [ -f \"$file\" ] || continue; chmod 0644 \"$file\" 2>/dev/null || true; ln -sfn \"$file\" \"/usr/share/xfce4/backdrops/$(basename \"$file\")\" 2>/dev/null || true; done",
+      "cat >/usr/local/bin/worktoper-configure-xfce-panel <<'WORKTOPER_XFCE_PANEL'",
+      "#!/bin/sh",
+      "set -eu",
+      "target=/home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
+      "mkdir -p \"$target\"",
+      "cat >\"$target/xfce4-panel.xml\" <<'EOF'",
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "",
+      "<channel name=\"xfce4-panel\" version=\"1.0\">",
+      "  <property name=\"configver\" type=\"int\" value=\"2\"/>",
+      "  <property name=\"panels\" type=\"array\">",
+      "    <value type=\"int\" value=\"1\"/>",
+      "    <property name=\"panel-1\" type=\"empty\">",
+      "      <property name=\"position\" type=\"string\" value=\"p=10;x=0;y=0\"/>",
+      "      <property name=\"length\" type=\"uint\" value=\"100\"/>",
+      "      <property name=\"position-locked\" type=\"bool\" value=\"true\"/>",
+      "      <property name=\"size\" type=\"uint\" value=\"32\"/>",
+      "      <property name=\"plugin-ids\" type=\"array\">",
+      "        <value type=\"int\" value=\"1\"/>",
+      "        <value type=\"int\" value=\"2\"/>",
+      "        <value type=\"int\" value=\"3\"/>",
+      "        <value type=\"int\" value=\"4\"/>",
+      "        <value type=\"int\" value=\"5\"/>",
+      "        <value type=\"int\" value=\"6\"/>",
+      "      </property>",
+      "    </property>",
+      "  </property>",
+      "  <property name=\"plugins\" type=\"empty\">",
+      "    <property name=\"plugin-1\" type=\"string\" value=\"applicationsmenu\"/>",
+      "    <property name=\"plugin-2\" type=\"string\" value=\"tasklist\"/>",
+      "    <property name=\"plugin-3\" type=\"string\" value=\"separator\">",
+      "      <property name=\"expand\" type=\"bool\" value=\"true\"/>",
+      "      <property name=\"style\" type=\"uint\" value=\"0\"/>",
+      "    </property>",
+      "    <property name=\"plugin-4\" type=\"string\" value=\"pager\"/>",
+      "    <property name=\"plugin-5\" type=\"string\" value=\"clock\"/>",
+      "    <property name=\"plugin-6\" type=\"string\" value=\"actions\"/>",
+      "  </property>",
+      "</channel>",
+      "EOF",
+      "chown -R worktoper:worktoper /home/worktoper/.config/xfce4 2>/dev/null || true",
+      "WORKTOPER_XFCE_PANEL",
+      "chmod 0755 /usr/local/bin/worktoper-configure-xfce-panel",
+      "/usr/local/bin/worktoper-configure-xfce-panel || true",
+      "panel_marker=/home/worktoper/.cache/worktoper-panel-nosystray-applied",
+      "if pgrep -u worktoper -x xfce4-panel >/dev/null 2>&1 && [ ! -f \"$panel_marker\" ]; then install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.cache; touch \"$panel_marker\"; chown worktoper:worktoper \"$panel_marker\"; runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; xfce4-panel --restart >/tmp/worktoper-xfce-panel-nosystray.log 2>&1 || true'; fi",
       "cat >/usr/local/sbin/worktoper-install-vscode <<'WORKTOPER_INSTALL_VSCODE'",
       "#!/bin/sh",
       "set -eu",
@@ -805,7 +884,8 @@ class VmManager {
       "  exit 1",
       "fi",
       "theme_path=/usr/share/themes/$theme_name",
-      "wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png",
+      "wallpaper=$(find /usr/share/backgrounds/worktoper -maxdepth 1 -iname 'alchemy-5.png' | head -n 1 2>/dev/null || true)",
+      "[ -n \"$wallpaper\" ] || wallpaper=/usr/share/backgrounds/worktoper/Alchemy-5.png",
       "mkdir -p /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
       "if [ ! -f \"$wallpaper\" ]; then",
       "  echo \"WorkToper background missing: $wallpaper\" >&2",
@@ -858,7 +938,7 @@ class VmManager {
       "for property in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/image-style$' || true); do xfconf-query -c xfce4-desktop -p \"$property\" -s 5 >/dev/null 2>&1 || true; done",
       "mkdir -p /home/worktoper/.config/gtk-3.0 /home/worktoper/.config/gtk-4.0",
       "printf '%s\\n' '[Settings]' \"gtk-theme-name=$theme_name\" \"gtk-icon-theme-name=$icon_theme\" 'gtk-font-name=Noto Sans 10' 'gtk-application-prefer-dark-theme=true' >/home/worktoper/.config/gtk-3.0/settings.ini",
-      "rm -f /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml",
+      "/usr/local/bin/worktoper-configure-xfce-panel >/dev/null 2>&1 || true",
       "ln -sfn \"$theme_path/gtk-4.0/assets\" /home/worktoper/.config/gtk-4.0/assets 2>/dev/null || true",
       "ln -sfn \"$theme_path/gtk-4.0/gtk.css\" /home/worktoper/.config/gtk-4.0/gtk.css 2>/dev/null || true",
       "ln -sfn \"$theme_path/gtk-4.0/gtk-dark.css\" /home/worktoper/.config/gtk-4.0/gtk-dark.css 2>/dev/null || true",
@@ -1044,7 +1124,7 @@ class VmManager {
       "echo '$ Xorg logs'",
       "tail -n 120 /var/log/Xorg.0.log 2>/dev/null || true",
       "echo '$ xsession errors'",
-      "tail -n 120 /home/worktoper/.xsession-errors 2>/dev/null | grep -Ev 'libxfce4kbd-private-WARNING.*Failed to grab keycode|Another clipboard manager is already running|xfce4-panel: There is already a running instance|ICE I/O Error|Disconnected from session manager|Failed to connect to session manager' | tail -n 80 || true",
+      "tail -n 120 /home/worktoper/.xsession-errors 2>/dev/null | grep -Ev 'libxfce4kbd-private-WARNING.*Failed to grab keycode|Another clipboard manager is already running|xfce4-panel: There is already a running instance|The notification area lost selection|ICE I/O Error|Disconnected from session manager|Failed to connect to session manager' | tail -n 80 || true",
     ].join("; ")
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })
     const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
@@ -1233,7 +1313,8 @@ class VmManager {
     return { ok: true }
   }
 
-  stop() {
+  async stop() {
+    const processToStop = this.process
     this.serial?.destroy()
     this.serial = null
     this.guestAgent?.close()
@@ -1246,11 +1327,19 @@ class VmManager {
     this.resizeTimer = null
     this.pendingDesktopSize = null
     this.lastAppliedDesktopSize = ""
-    if (this.process && !this.process.killed) this.process.kill("SIGTERM")
-    this.process = null
+    if (processToStop && processToStop.exitCode === null && processToStop.signalCode === null) {
+      processToStop.kill("SIGTERM")
+      const stopped = await waitForProcessExit(processToStop, 7000)
+      if (!stopped && processToStop.exitCode === null && processToStop.signalCode === null) {
+        processToStop.kill("SIGKILL")
+        await waitForProcessExit(processToStop, 2500)
+      }
+    }
+    if (this.process === processToStop) this.process = null
     this.connection = null
     this.pendingLaunches = []
     this.update({ phase: "idle", detail: "Linux VM 已停止", bootProgress: 0, cpuActive: false, diskActive: false, network: "disconnected" })
+    return { ok: true }
   }
 }
 
