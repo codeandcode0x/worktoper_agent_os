@@ -1089,12 +1089,12 @@ class VmManager {
       "if ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1; then",
       "  echo '$ x11vnc -display :0 -rfbport 5900'",
       "  pkill -x x11vnc >/dev/null 2>&1 || true",
-      "  nohup x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -o /tmp/worktoper-x11vnc.log >/tmp/worktoper-x11vnc-start.log 2>&1 &",
+      "  nohup x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -quiet -o /tmp/worktoper-x11vnc.log >/tmp/worktoper-x11vnc-start.log 2>&1 &",
       "fi",
       "sleep 1",
       "vnc_ready=0",
       "pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' || vnc_ready=1",
-      "tail -n 30 /tmp/worktoper-x11vnc-start.log /tmp/worktoper-x11vnc.log 2>/dev/null || true",
+      "tail -n 30 /tmp/worktoper-x11vnc-start.log /tmp/worktoper-x11vnc.log 2>/dev/null | grep -Ev 'ncache|copyrect|karlrunge.com/x11vnc/faq|client.*caching' || true",
       "exit $vnc_ready",
     ].join("\n")
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })

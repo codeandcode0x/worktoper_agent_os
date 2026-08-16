@@ -320,6 +320,20 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
   }, [connected, runtime.phase])
 
   useEffect(() => {
+    if (runtime.phase !== "ready") return
+    const refreshDesktop = () => {
+      window.dispatchEvent(new Event("resize"))
+      rfbRef.current?.focus?.({ preventScroll: true })
+    }
+    window.requestAnimationFrame(refreshDesktop)
+    const timers = [
+      window.setTimeout(refreshDesktop, 450),
+      window.setTimeout(refreshDesktop, 1200),
+    ]
+    return () => timers.forEach((timer) => window.clearTimeout(timer))
+  }, [runtime.phase])
+
+  useEffect(() => {
     if (!connected || runtime.phase !== "ready") return
     const sync = () => void syncClipboardToRemote()
     const onKeyDown = (event: KeyboardEvent) => {
@@ -558,8 +572,8 @@ export function WebDesktop() {
     void desktopLinux.boot().catch(() => undefined)
   }, [])
   useEffect(() => {
-    if (runtime.phase === "ready" && desktopConnected) {
-      const timer = window.setTimeout(() => setBootOverlayVisible(false), 900)
+    if (runtime.phase === "ready") {
+      const timer = window.setTimeout(() => setBootOverlayVisible(false), desktopConnected ? 900 : 2200)
       return () => window.clearTimeout(timer)
     }
     setBootOverlayVisible(true)
