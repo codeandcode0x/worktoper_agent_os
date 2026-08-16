@@ -182,6 +182,7 @@ packages:
   - git
   - dbus-x11
   - kbd
+  - linux-image-amd64
   - lightdm
   - xfce4
   - xfce4-terminal
@@ -199,6 +200,8 @@ packages:
   - fonts-noto-color-emoji
   - papirus-icon-theme
   - qemu-guest-agent
+  - sshfs
+  - cifs-utils
 write_files:
   - path: /usr/local/sbin/worktoper-install-vscode
     permissions: "0755"
@@ -532,6 +535,7 @@ runcmd:
   - systemctl enable serial-getty@ttyS0.service
   - systemctl enable serial-getty@ttyS1.service || true
   - systemctl restart ssh || systemctl restart sshd || true
+  - generic_kernel=$(ls -1 /boot/vmlinuz-*-amd64 2>/dev/null | grep -v cloud | sort -V | tail -n 1 || true); if [ -n "$generic_kernel" ]; then generic_version=$(basename "$generic_kernel" | sed 's/^vmlinuz-//'); menu="Advanced options for Debian GNU/Linux>Debian GNU/Linux, with Linux $generic_version"; mkdir -p /etc/default/grub.d; printf 'GRUB_DEFAULT="%s"\nGRUB_TIMEOUT=0\n' "$menu" >/etc/default/grub.d/99-worktoper-default-kernel.cfg; update-grub || true; fi
   - mkdir -p /var/lib/lightdm/data /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local/share /run/lightdm /var/log/lightdm
   - chown -R lightdm:lightdm /var/lib/lightdm /run/lightdm /var/log/lightdm || true
   - chmod 0755 /var/lib/lightdm /run/lightdm /var/log/lightdm

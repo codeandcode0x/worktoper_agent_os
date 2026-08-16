@@ -36,6 +36,10 @@ function shellQuote(value) {
   return `'${text.replaceAll("'", "'\\''")}'`
 }
 
+function qemuOptionValue(value) {
+  return String(value).replaceAll(",", ",,")
+}
+
 function platformExecutableCandidates(command) {
   if (process.platform === "darwin") {
     return [
@@ -631,7 +635,7 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb,
     )
   }
   if (sharedDirectory && fileExists(sharedDirectory)) {
-    args.push("-virtfs", `local,path=${sharedDirectory},mount_tag=worktoper_share,security_model=none,id=worktoper_share`)
+    args.push("-virtfs", `local,path=${qemuOptionValue(sharedDirectory)},mount_tag=worktoper_share,security_model=mapped-xattr,id=worktoper_share,multidevs=remap`)
   }
   if (backgroundDirectory) {
     args.push("-virtfs", `local,path=${backgroundDirectory},mount_tag=worktoper_bg,security_model=mapped-xattr,readonly=on,id=worktoper_bg`)
@@ -949,6 +953,7 @@ class VmManager {
         if (status.exitcode === 0) {
           const vncReady = await this.ensureEmbeddedVnc()
           if (vncReady) {
+            await this.ensureSharedDirectory()
             this.markDesktopReady("lightdm / XFCE / x11vnc readiness check")
             return
           }
@@ -1004,19 +1009,73 @@ class VmManager {
     if (text) this.send("worktoper:vm:boot", `${text}\r\n`)
   }
 
-  async ensureDesktopSession() {
-    if (!this.guestAgent) return
-    const sharedDirectoryCommands = this.sharedDirectory ? [
+  sharedDirectoryGuestCommands() {
+    if (this.sharedDirectory) {
+      return [
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Shared",
+      "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Desktop",
+      "modprobe 9p 9pnet 9pnet_virtio >/dev/null 2>&1 || true",
+      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1 && ! findmnt -n -o SOURCE /home/worktoper/Shared 2>/dev/null | grep -Fx worktoper_share >/dev/null 2>&1; then",
+      "  umount /home/worktoper/Shared >/dev/null 2>&1 || true",
+      "fi",
       "if ! mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
       "  echo '$ mount shared directory at /home/worktoper/Shared'",
-      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,access=client worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=client worktoper_share /home/worktoper/Shared || { echo '[WorkToper] Shared directory mount failed'; dmesg | tail -n 20 || true; }",
+      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=client worktoper_share /home/worktoper/Shared || { echo '[WorkToper] Shared directory mount failed'; dmesg | tail -n 30 || true; exit 1; }",
       "fi",
-      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then echo '[WorkToper] Shared directory mounted at /home/worktoper/Shared'; fi",
+      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
+      "  echo '[WorkToper] Shared directory mounted at /home/worktoper/Shared'",
+      "  findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS /home/worktoper/Shared || true",
+      "  chown worktoper:worktoper /home/worktoper/Shared >/dev/null 2>&1 || true",
+      "  chmod 0775 /home/worktoper/Shared >/dev/null 2>&1 || true",
+      "  if runuser -u worktoper -- sh -lc 'test_file=/home/worktoper/Shared/.worktoper-write-test-$$; printf ok >\"$test_file\" && rm -f \"$test_file\"'; then",
+      "    echo '[WorkToper] Shared directory write test passed'",
+      "  else",
+      "    echo '[WorkToper] Shared directory is mounted but not writable by worktoper user'",
+      "  fi",
+      "fi",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Shared' 'Exec=exo-open --launch FileManager /home/worktoper/Shared' 'Icon=folder' 'Terminal=false' 'Categories=Utility;' > /home/worktoper/Desktop/Shared.desktop",
-    ] : [
-      "rm -f /home/worktoper/Desktop/Shared.desktop 2>/dev/null || true",
+      "chmod 0755 /home/worktoper/Desktop/Shared.desktop",
+      "chown worktoper:worktoper /home/worktoper/Desktop/Shared.desktop",
+      "ln -sfn /home/worktoper/Shared /home/worktoper/Desktop/Shared",
+      "chown -h worktoper:worktoper /home/worktoper/Desktop/Shared 2>/dev/null || true",
+      "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config/gtk-3.0",
+      "grep -Fx 'file:///home/worktoper/Shared Shared' /home/worktoper/.config/gtk-3.0/bookmarks >/dev/null 2>&1 || printf '%s\\n' 'file:///home/worktoper/Shared Shared' >>/home/worktoper/.config/gtk-3.0/bookmarks",
+      "chown worktoper:worktoper /home/worktoper/.config/gtk-3.0/bookmarks 2>/dev/null || true",
     ]
+    }
+    return [
+      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then umount /home/worktoper/Shared >/dev/null 2>&1 || true; fi",
+      "rm -f /home/worktoper/Desktop/Shared.desktop 2>/dev/null || true",
+      "rm -f /home/worktoper/Desktop/Shared 2>/dev/null || true",
+      "if [ -f /home/worktoper/.config/gtk-3.0/bookmarks ]; then grep -Fxv 'file:///home/worktoper/Shared Shared' /home/worktoper/.config/gtk-3.0/bookmarks >/tmp/worktoper-bookmarks && cat /tmp/worktoper-bookmarks >/home/worktoper/.config/gtk-3.0/bookmarks; fi",
+    ]
+  }
+
+  async ensureSharedDirectory() {
+    if (!this.guestAgent) return false
+    const command = [
+      "set -u",
+      "export DISPLAY=:0",
+      "export XAUTHORITY=/home/worktoper/.Xauthority",
+      "export XDG_RUNTIME_DIR=/run/user/1000",
+      "mkdir -p /run/user/1000",
+      "chown worktoper:worktoper /run/user/1000 2>/dev/null || true",
+      "chmod 0700 /run/user/1000 2>/dev/null || true",
+      ...this.sharedDirectoryGuestCommands(),
+      "runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XAUTHORITY=/home/worktoper/.Xauthority; export XDG_RUNTIME_DIR=/run/user/1000; xfdesktop --reload >/dev/null 2>&1 || true'",
+    ].join("\n")
+    const status = await this.guestAgent.guestShell(command, { captureOutput: true })
+    const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
+    if (text) this.send("worktoper:vm:boot", `\r\n[WorkToper] Shared directory setup\r\n${text}\r\n`)
+    if (this.sharedDirectory && status.exitcode !== 0) {
+      this.update({ detail: "共享目录挂载失败，请检查宿主机目录权限", diskActive: false })
+      return false
+    }
+    return true
+  }
+
+  async ensureDesktopSession() {
+    if (!this.guestAgent) return
     const command = [
       "set -u",
       "export DISPLAY=:0",
@@ -1027,7 +1086,7 @@ class VmManager {
       "chmod 0700 /run/user/1000 2>/dev/null || true",
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Desktop /home/worktoper/Projects",
       "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config /home/worktoper/.config/autostart /home/worktoper/.config/xfce4 /home/worktoper/.config/xfce4/xfconf /home/worktoper/.config/xfce4/xfconf/xfce-perchannel-xml",
-      ...sharedDirectoryCommands,
+      ...this.sharedDirectoryGuestCommands(),
       "mkdir -p /usr/share/backgrounds/worktoper /usr/share/xfce4/backdrops /mnt/worktoper-bg",
       "mountpoint -q /mnt/worktoper-bg || mount -t 9p -o trans=virtio,version=9p2000.L,ro worktoper_bg /mnt/worktoper-bg >/dev/null 2>&1 || true",
       "for file in /mnt/worktoper-bg/* /var/lib/cloud/seed/nocloud/backgrounds/* /var/lib/cloud/seed/nocloud-net/backgrounds/* /media/cidata/backgrounds/*; do [ -f \"$file\" ] || continue; case \"$file\" in *.jpg|*.jpeg|*.png|*.webp|*.JPG|*.JPEG|*.PNG|*.WEBP) cp -f \"$file\" /usr/share/backgrounds/worktoper/ ;; esac; done",
