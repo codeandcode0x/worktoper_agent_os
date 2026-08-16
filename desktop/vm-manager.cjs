@@ -1,9 +1,14 @@
 const fs = require("node:fs")
+const http = require("node:http")
+const https = require("node:https")
 const net = require("node:net")
 const os = require("node:os")
 const path = require("node:path")
 const crypto = require("node:crypto")
 const { spawn, spawnSync } = require("node:child_process")
+
+const DEFAULT_VM_DOWNLOAD_KEY = "28112458e7b236b33bf95e8d14999f736a16fac665c9bbffc5ea38fb7574e284"
+const DEFAULT_VM_ARCHIVE_VERSION = "v1.0"
 
 function fileExists(filePath) {
   try {
@@ -246,6 +251,185 @@ function resolveVmImage(app, arch = "x64") {
   const userVmDir = path.join(app.getPath("userData"), "vm")
   const userDisk = path.join(userVmDir, `worktoper-agent-os-${arch}.qcow2`)
   return userDisk
+}
+
+function downloadArch(arch = "x64") {
+  if (arch === "x64") return "amd64"
+  if (arch === "arm64") return "arm64"
+  return arch
+}
+
+function getVmArchiveVersion() {
+  return process.env.WORKTOPER_VM_ARCHIVE_VERSION || DEFAULT_VM_ARCHIVE_VERSION
+}
+
+function getVmArchiveBaseName(arch = "x64") {
+  return `worktoper_agent_os_${arch}_vm_${getVmArchiveVersion()}`
+}
+
+function getLegacyVmArchiveBaseName(arch = "x64") {
+  return `worktoper-agent-os-${arch}-vm-${getVmArchiveVersion()}`
+}
+
+function getVmArchiveName(arch = "x64") {
+  return process.env.WORKTOPER_VM_ARCHIVE_NAME || `${getVmArchiveBaseName(arch)}.tar.xz`
+}
+
+function getVmArchiveNameAliases(arch = "x64") {
+  const archiveName = getVmArchiveName(arch)
+  const aliases = [
+    archiveName,
+    `${getVmArchiveBaseName(arch)}.tar.xz`,
+    `${getLegacyVmArchiveBaseName(arch)}.tar.xz`,
+  ]
+  return [...new Set(aliases)]
+}
+
+function getVmExtractedDirectoryCandidates(extractedDirectory, arch = "x64") {
+  return [
+    path.join(extractedDirectory, getVmArchiveBaseName(arch)),
+    path.join(extractedDirectory, getLegacyVmArchiveBaseName(arch)),
+    extractedDirectory,
+  ].filter((candidate, index, list) => list.indexOf(candidate) === index)
+}
+
+function getVmDownloadUrl(arch = "x64") {
+  return process.env.WORKTOPER_VM_DOWNLOAD_URL || `https://www.worktoper.com/worktoper/agent/os/images?arch=${downloadArch(arch)}`
+}
+
+function getVmDownloadKey() {
+  return process.env.WORKTOPER_VM_DOWNLOAD_KEY || DEFAULT_VM_DOWNLOAD_KEY
+}
+
+function findExistingVmArchive(app, arch = "x64") {
+  const archiveNames = getVmArchiveNameAliases(arch)
+  const userVmDir = path.join(app.getPath("userData"), "vm")
+  const candidates = [
+    process.env.WORKTOPER_VM_ARCHIVE,
+    ...archiveNames.flatMap((archiveName) => [
+      path.join(userVmDir, archiveName),
+      path.join(process.cwd(), archiveName),
+      path.join(getResourcesRoot(app), archiveName),
+      path.join(getResourcesRoot(app), "images", archiveName),
+    ]),
+  ].filter(Boolean)
+  return candidates.find(fileExists) || ""
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ""
+  const units = ["B", "KB", "MB", "GB"]
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
+function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      reject(new Error(`VM 镜像下载重定向过多：${url}`))
+      return
+    }
+    const parsed = new URL(url)
+    const client = parsed.protocol === "http:" ? http : https
+    const request = client.get(parsed, { headers }, (response) => {
+      const statusCode = response.statusCode || 0
+      if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
+        response.resume()
+        downloadFile(new URL(response.headers.location, url).toString(), target, { headers, onProgress }, redirectCount + 1).then(resolve, reject)
+        return
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume()
+        reject(new Error(`VM 镜像下载失败：HTTP ${statusCode}`))
+        return
+      }
+      const total = Number(response.headers["content-length"] || 0)
+      let received = 0
+      let lastProgress = 0
+      const output = fs.createWriteStream(target)
+      response.on("data", (chunk) => {
+        received += chunk.length
+        if (!total || received - lastProgress >= 16 * 1024 * 1024 || received === total) {
+          lastProgress = received
+          onProgress?.({ received, total })
+        }
+      })
+      response.pipe(output)
+      output.on("finish", () => output.close(resolve))
+      output.on("error", reject)
+    })
+    request.setTimeout(30000, () => request.destroy(new Error("VM 镜像下载超时")))
+    request.on("error", reject)
+  })
+}
+
+function extractVmArchive(archive, targetDirectory, onLog) {
+  fs.mkdirSync(targetDirectory, { recursive: true })
+  const result = spawnSync("tar", ["-xJf", archive, "-C", targetDirectory], { encoding: "utf8" })
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
+  if (output) onLog?.(output)
+  if (result.status !== 0) {
+    throw new Error(`VM 镜像解压失败，请确认系统支持 tar.xz：${output || result.error?.message || `exit ${result.status}`}`)
+  }
+}
+
+function findExtractedFile(root, matcher) {
+  const stack = [root]
+  while (stack.length) {
+    const current = stack.pop()
+    let entries = []
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(fullPath)
+      } else if (matcher(fullPath, entry.name)) {
+        return fullPath
+      }
+    }
+  }
+  return ""
+}
+
+function findExtractedFileInCandidates(candidates, matcher) {
+  for (const candidate of candidates) {
+    if (!fileExists(candidate)) continue
+    const file = findExtractedFile(candidate, matcher)
+    if (file) return file
+  }
+  return ""
+}
+
+function installExtractedVmImage({ extractedDirectory, disk, arch }) {
+  const candidates = getVmExtractedDirectoryCandidates(extractedDirectory, arch)
+  const expectedName = path.basename(disk)
+  const exactDisk = findExtractedFileInCandidates(candidates, (_file, name) => name === expectedName)
+  const fallbackDisk = exactDisk || findExtractedFileInCandidates(candidates, (_file, name) => name.endsWith(".qcow2"))
+  if (!fallbackDisk) throw new Error("VM 镜像压缩包内没有找到 qcow2 文件")
+  fs.mkdirSync(path.dirname(disk), { recursive: true })
+  fs.renameSync(fallbackDisk, disk)
+
+  const markerName = `worktoper-agent-os-${arch}.initialized`
+  const extractedMarker = findExtractedFileInCandidates(candidates, (_file, name) => name === markerName)
+  const targetMarker = path.join(path.dirname(disk), markerName)
+  if (extractedMarker) {
+    fs.renameSync(extractedMarker, targetMarker)
+  } else if (!fileExists(targetMarker)) {
+    fs.writeFileSync(targetMarker, `downloaded ${new Date().toISOString()}\n`)
+  }
+
+  const seedName = `seed-${arch}.iso`
+  const extractedSeed = findExtractedFileInCandidates(candidates, (_file, name) => name === seedName)
+  if (extractedSeed) fs.renameSync(extractedSeed, path.join(path.dirname(disk), seedName))
 }
 
 function resolveSeedImage(app, arch = "x64") {
@@ -516,6 +700,7 @@ class VmManager {
     this.pendingDesktopSize = null
     this.resizeTimer = null
     this.lastAppliedDesktopSize = ""
+    this.prepareImagePromise = null
     this.state = {
       phase: "idle",
       detail: "Linux VM 尚未启动",
@@ -538,20 +723,93 @@ class VmManager {
     this.onState?.(this.state)
   }
 
+  async ensureVmImageAvailable({ arch, disk }) {
+    if (fileExists(disk)) return
+    if (this.prepareImagePromise) {
+      await this.prepareImagePromise
+      return
+    }
+
+    this.prepareImagePromise = this.downloadAndInstallVmImage({ arch, disk }).finally(() => {
+      this.prepareImagePromise = null
+    })
+    await this.prepareImagePromise
+  }
+
+  async downloadAndInstallVmImage({ arch, disk }) {
+    const userVmDir = path.dirname(disk)
+    const archiveName = getVmArchiveName(arch)
+    const cachedArchive = path.join(userVmDir, archiveName)
+    const tempArchive = `${cachedArchive}.download`
+    const extractDirectory = path.join(userVmDir, `.extract-${process.pid}-${Date.now()}`)
+    const existingArchive = findExistingVmArchive(this.app, arch)
+    const downloadUrl = getVmDownloadUrl(arch)
+    const headers = { "X-WorkToper-Download-Key": getVmDownloadKey() }
+
+    fs.mkdirSync(userVmDir, { recursive: true })
+    this.update({ phase: "loading", detail: "正在准备 Linux 镜像文件", bootProgress: 2, diskActive: true, network: "connecting" })
+    this.send("worktoper:vm:boot", [
+      "\r\n[WorkToper] Linux VM image is missing",
+      `[WorkToper] Expected disk: ${disk}`,
+      existingArchive ? `[WorkToper] Using local archive: ${existingArchive}` : `[WorkToper] Download: ${downloadUrl}`,
+      "",
+    ].join("\r\n"))
+
+    try {
+      const archive = existingArchive || cachedArchive
+      if (!existingArchive) {
+        if (fileExists(tempArchive)) fs.rmSync(tempArchive, { force: true })
+        let lastPercent = -1
+        await downloadFile(downloadUrl, tempArchive, {
+          headers,
+          onProgress: ({ received, total }) => {
+            const percent = total ? Math.min(100, Math.floor((received / total) * 100)) : 0
+            if (percent !== lastPercent && (!total || percent % 3 === 0 || percent === 100)) {
+              lastPercent = percent
+              const detail = total ? `正在下载 Linux 镜像 ${percent}% (${formatBytes(received)} / ${formatBytes(total)})` : `正在下载 Linux 镜像 ${formatBytes(received)}`
+              this.update({ phase: "loading", detail, bootProgress: Math.max(3, Math.min(34, Math.floor(percent * 0.32))), diskActive: true, network: "connected" })
+              this.send("worktoper:vm:boot", `[WorkToper] ${detail}\r\n`)
+            }
+          },
+        })
+        fs.renameSync(tempArchive, cachedArchive)
+        this.send("worktoper:vm:boot", `[WorkToper] Downloaded VM archive: ${cachedArchive}\r\n`)
+      }
+
+      this.update({ phase: "loading", detail: "正在解压 Linux 镜像", bootProgress: 36, diskActive: true, network: "connected" })
+      this.send("worktoper:vm:boot", `[WorkToper] Extracting VM archive: ${archive}\r\n`)
+      if (fileExists(extractDirectory)) fs.rmSync(extractDirectory, { recursive: true, force: true })
+      extractVmArchive(archive, extractDirectory, (line) => this.send("worktoper:vm:boot", `${line}\r\n`))
+
+      this.update({ phase: "loading", detail: "正在安装 Linux 镜像", bootProgress: 54, diskActive: true, network: "connected" })
+      installExtractedVmImage({ extractedDirectory: extractDirectory, disk, arch })
+      if (!fileExists(disk)) throw new Error(`Linux VM 镜像安装失败：${disk}`)
+      this.send("worktoper:vm:boot", `[WorkToper] Installed VM disk: ${disk}\r\n`)
+      this.update({ phase: "loading", detail: "Linux 镜像准备完成", bootProgress: 62, diskActive: true, network: "connected" })
+    } catch (error) {
+      try {
+        if (fileExists(tempArchive)) fs.rmSync(tempArchive, { force: true })
+      } catch {}
+      throw error
+    } finally {
+      try {
+        if (fileExists(extractDirectory)) fs.rmSync(extractDirectory, { recursive: true, force: true })
+      } catch {}
+    }
+  }
+
   async start() {
     if (this.process && !this.process.killed && this.connection) return this.connection
 
     const arch = process.env.WORKTOPER_VM_ARCH || (process.arch === "arm64" ? "arm64" : "x64")
     const qemu = resolveQemuBinary(this.app, arch)
     const disk = resolveVmImage(this.app, arch)
-    const seed = resolveSeedImage(this.app, arch)
     if (!qemu || !fileExists(qemu)) {
       const searched = qemuCandidates(this.app, arch).join(", ")
       throw new Error(`未找到 QEMU ${getQemuName(arch)}。请安装 QEMU，或设置 WORKTOPER_QEMU 指向随应用打包的 QEMU 二进制。已查找：${searched || "无"}`)
     }
-    if (!fileExists(disk)) {
-      throw new Error(`未找到 Linux VM 镜像：${disk}。请先运行 corepack pnpm@10.15.0 vm:prepare，或设置 WORKTOPER_VM_IMAGE。`)
-    }
+    await this.ensureVmImageAvailable({ arch, disk })
+    const seed = resolveSeedImage(this.app, arch)
     const diskUserHint = findDiskUserHint(disk)
     if (diskUserHint) {
       throw new Error(`VM 镜像正在被另一个 QEMU 进程使用，不能重复启动：${disk}\n${diskUserHint}\n请先退出旧的 WorkToper Agent OS 或停止旧 QEMU 后再启动。`)
