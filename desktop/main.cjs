@@ -78,6 +78,14 @@ function getStaticRoot() {
   return isDev ? path.join(__dirname, "..", "out") : path.join(app.getAppPath(), "out")
 }
 
+function getWindowIconPath() {
+  const candidates = [
+    path.join(app.getAppPath(), "images", "icons", "icon.png"),
+    path.join(__dirname, "..", "images", "icons", "icon.png"),
+  ]
+  return candidates.find((candidate) => fs.existsSync(candidate))
+}
+
 async function createWindow() {
   const root = getStaticRoot()
   staticServer = createStaticServer(root)
@@ -102,6 +110,7 @@ async function createWindow() {
     center: true,
     aspectRatio: 16 / 9,
     title: "WorkToper Agent OS",
+    icon: getWindowIconPath(),
     backgroundColor: "#111317",
     show: false,
     webPreferences: {

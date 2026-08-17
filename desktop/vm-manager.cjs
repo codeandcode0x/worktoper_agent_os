@@ -457,6 +457,8 @@ function resolveBackgroundDirectory(app) {
   ]
   return candidates.find((candidate) => {
     try {
+      if (candidate.includes(".asar")) return false
+      if (!fs.statSync(candidate).isDirectory()) return false
       return fs.readdirSync(candidate).some((name) => name.toLowerCase() === "alchemy-5.png")
     } catch {
       return false
@@ -852,6 +854,7 @@ class VmManager {
       `[WorkToper] CPU: ${cpus}`,
       `[WorkToper] Memory: ${memoryMb} MB`,
       `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
+      `[WorkToper] Background directory: ${backgroundDirectory || "none"}`,
       `[WorkToper] Launch command: ${qemuCommandLine(qemu, args)}`,
       "",
     ].filter((line) => line !== "").join("\r\n"))
@@ -1018,9 +1021,13 @@ class VmManager {
       "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1 && ! findmnt -n -o SOURCE /home/worktoper/Shared 2>/dev/null | grep -Fx worktoper_share >/dev/null 2>&1; then",
       "  umount /home/worktoper/Shared >/dev/null 2>&1 || true",
       "fi",
+      "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1 && findmnt -n -o OPTIONS /home/worktoper/Shared 2>/dev/null | grep -Eq '(^|,)loose(,|$)|(^|,)cache=loose(,|$)'; then",
+      "  echo '$ remount shared directory without loose cache'",
+      "  umount /home/worktoper/Shared >/dev/null 2>&1 || true",
+      "fi",
       "if ! mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
       "  echo '$ mount shared directory at /home/worktoper/Shared'",
-      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=client worktoper_share /home/worktoper/Shared || { echo '[WorkToper] Shared directory mount failed'; dmesg | tail -n 30 || true; exit 1; }",
+      "  mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=none,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,cache=none,access=any,dfltuid=1000,dfltgid=1000 worktoper_share /home/worktoper/Shared || mount -t 9p -o trans=virtio,version=9p2000.L,access=client worktoper_share /home/worktoper/Shared || { echo '[WorkToper] Shared directory mount failed'; dmesg | tail -n 30 || true; exit 1; }",
       "fi",
       "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then",
       "  echo '[WorkToper] Shared directory mounted at /home/worktoper/Shared'",
@@ -1033,9 +1040,24 @@ class VmManager {
       "    echo '[WorkToper] Shared directory is mounted but not writable by worktoper user'",
       "  fi",
       "fi",
+      "cat >/usr/local/bin/worktoper-share-permissions <<'WORKTOPER_SHARE_PERMISSIONS'",
+      "#!/bin/sh",
+      "set -u",
+      "share=/home/worktoper/Shared",
+      "while mountpoint -q \"$share\" >/dev/null 2>&1; do",
+      "  find \"$share\" -xdev \\( ! -user worktoper -o ! -group worktoper \\) -exec chown worktoper:worktoper {} + >/dev/null 2>&1 || true",
+      "  find \"$share\" -xdev -type d ! -perm -0775 -exec chmod u+rwx,g+rwx {} + >/dev/null 2>&1 || true",
+      "  find \"$share\" -xdev -type f ! -perm -0664 -exec chmod u+rw,g+rw {} + >/dev/null 2>&1 || true",
+      "  sleep 1",
+      "done",
+      "WORKTOPER_SHARE_PERMISSIONS",
+      "chmod 0755 /usr/local/bin/worktoper-share-permissions",
+      "if ! pgrep -f '/usr/local/bin/worktoper-share-permissions' >/dev/null 2>&1; then nohup /usr/local/bin/worktoper-share-permissions >/tmp/worktoper-share-permissions.log 2>&1 & fi",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Shared' 'Exec=exo-open --launch FileManager /home/worktoper/Shared' 'Icon=folder' 'Terminal=false' 'Categories=Utility;' > /home/worktoper/Desktop/Shared.desktop",
       "chmod 0755 /home/worktoper/Desktop/Shared.desktop",
       "chown worktoper:worktoper /home/worktoper/Desktop/Shared.desktop",
+      "if [ -e /home/worktoper/Desktop/Share ] && [ ! -L /home/worktoper/Desktop/Share ]; then rm -rf /home/worktoper/Desktop/Share; fi",
+      "if [ -e /home/worktoper/Desktop/Shared ] && [ ! -L /home/worktoper/Desktop/Shared ]; then rm -rf /home/worktoper/Desktop/Shared; fi",
       "ln -sfn /home/worktoper/Shared /home/worktoper/Desktop/Shared",
       "chown -h worktoper:worktoper /home/worktoper/Desktop/Shared 2>/dev/null || true",
       "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config/gtk-3.0",
@@ -1046,7 +1068,7 @@ class VmManager {
     return [
       "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1; then umount /home/worktoper/Shared >/dev/null 2>&1 || true; fi",
       "rm -f /home/worktoper/Desktop/Shared.desktop 2>/dev/null || true",
-      "rm -f /home/worktoper/Desktop/Shared 2>/dev/null || true",
+      "rm -rf /home/worktoper/Desktop/Shared /home/worktoper/Desktop/Share 2>/dev/null || true",
       "if [ -f /home/worktoper/.config/gtk-3.0/bookmarks ]; then grep -Fxv 'file:///home/worktoper/Shared Shared' /home/worktoper/.config/gtk-3.0/bookmarks >/tmp/worktoper-bookmarks && cat /tmp/worktoper-bookmarks >/home/worktoper/.config/gtk-3.0/bookmarks; fi",
     ]
   }

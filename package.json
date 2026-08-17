@@ -65,6 +65,7 @@
       "desktop/**/*",
       "bg/**/*",
       "images/bg/**/*",
+      "images/icons/**/*",
       "lib/**/*",
       "out/**/*",
       "public/**/*",
@@ -75,10 +76,18 @@
       "next.config.mjs",
       "README.md"
     ],
+    "icon": "images/icons/icon.png",
     "extraResources": [
       {
         "from": "runtime/qemu",
         "to": "runtime/qemu",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "images/bg",
+        "to": "images/bg",
         "filter": [
           "**/*"
         ]
@@ -87,12 +96,14 @@
     "asar": true,
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "images/icons/icon.icns",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
+      "icon": "images/icons/icon.ico",
       "target": [
         "nsis",
         "portable"
@@ -100,6 +111,7 @@
     },
     "linux": {
       "category": "Development",
+      "icon": "images/icons/icons",
       "target": [
         "AppImage",
         "deb"
