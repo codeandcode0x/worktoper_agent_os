@@ -2,10 +2,16 @@
   "name": "worktoper-agent-os",
   "version": "0.1.0",
   "description": "WorkToper Agent OS desktop app with a QEMU-backed Linux desktop VM.",
+  "desktopName": "worktoper-agent-os",
   "private": true,
   "packageManager": "pnpm@10.15.0",
   "main": "desktop/main.cjs",
-  "author": "WorkToper",
+  "author": {
+    "name": "WorkToper",
+    "email": "support@worktoper.com",
+    "url": "https://www.worktoper.com"
+  },
+  "homepage": "https://www.worktoper.com",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -112,6 +118,8 @@
     "linux": {
       "category": "Development",
       "icon": "images/icons/icons",
+      "maintainer": "WorkToper <support@worktoper.com>",
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb"
