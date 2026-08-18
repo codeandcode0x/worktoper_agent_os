@@ -17,11 +17,11 @@
     "build": "next build",
     "start": "node desktop/static-server.cjs out",
     "desktop:dev": "next build && electron .",
-    "desktop:pack": "next build && electron-builder --dir",
-    "dist": "next build && electron-builder",
-    "dist:mac": "next build && electron-builder --mac",
-    "dist:win": "next build && electron-builder --win",
-    "dist:linux": "next build && electron-builder --linux",
+    "desktop:pack": "next build && electron-builder --dir --x64 -c.electronDist=runtime/electron",
+    "dist": "next build && electron-builder --x64 -c.electronDist=runtime/electron",
+    "dist:mac": "next build && electron-builder --mac --x64 -c.electronDist=runtime/electron",
+    "dist:win": "next build && electron-builder --win --x64 -c.electronDist=runtime/electron",
+    "dist:linux": "next build && electron-builder --linux --x64 -c.electronDist=runtime/electron",
     "vm:prepare": "node scripts/prepare-vm.mjs",
     "lint": "eslint ."
   },
@@ -85,13 +85,6 @@
     "icon": "images/icons/icon.png",
     "extraResources": [
       {
-        "from": "runtime/qemu",
-        "to": "runtime/qemu",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "images/bg",
         "to": "images/bg",
         "filter": [
@@ -103,6 +96,18 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "images/icons/icon.icns",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "extraResources": [
+        {
+          "from": "runtime/qemu/darwin",
+          "to": "runtime/qemu/darwin"
+        },
+        {
+          "from": "runtime/tools/darwin",
+          "to": "runtime/tools/darwin"
+        }
+      ],
       "target": [
         "dmg",
         "zip"
@@ -110,6 +115,16 @@
     },
     "win": {
       "icon": "images/icons/icon.ico",
+      "extraResources": [
+        {
+          "from": "runtime/qemu/win32",
+          "to": "runtime/qemu/win32"
+        },
+        {
+          "from": "runtime/tools/win32",
+          "to": "runtime/tools/win32"
+        }
+      ],
       "target": [
         "nsis",
         "portable"
@@ -120,6 +135,16 @@
       "icon": "images/icons/icons",
       "maintainer": "WorkToper <support@worktoper.com>",
       "syncDesktopName": true,
+      "extraResources": [
+        {
+          "from": "runtime/qemu/linux",
+          "to": "runtime/qemu/linux"
+        },
+        {
+          "from": "runtime/tools/linux",
+          "to": "runtime/tools/linux"
+        }
+      ],
       "target": [
         "AppImage",
         "deb"

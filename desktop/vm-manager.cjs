@@ -18,6 +18,17 @@ function fileExists(filePath) {
   }
 }
 
+function executableExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return false
+    if (process.platform === "win32") return true
+    fs.accessSync(filePath, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function commandExists(command) {
   const paths = (process.env.PATH || "").split(path.delimiter)
   const extensions = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""]
@@ -28,6 +39,11 @@ function commandExists(command) {
     }
   }
   return ""
+}
+
+function executableName(command) {
+  if (process.platform !== "win32") return command
+  return /\.(exe|cmd|bat)$/i.test(command) ? command : `${command}.exe`
 }
 
 function shellQuote(value) {
@@ -227,27 +243,54 @@ function getRuntimeRoots(app) {
   ]
 }
 
+function runtimeExecutableCandidates(app, group, command) {
+  const name = executableName(command)
+  const platformArch = `${process.platform}-${process.arch}`
+  return getRuntimeRoots(app).flatMap((runtimeRoot) => [
+    path.join(runtimeRoot, group, platformArch, name),
+    path.join(runtimeRoot, group, process.platform, process.arch, name),
+    path.join(runtimeRoot, group, process.platform, name),
+    path.join(runtimeRoot, group, name),
+  ])
+}
+
+function toolCandidates(app, commands, envVar = "") {
+  const envCandidate = envVar ? process.env[envVar] : ""
+  const commandList = Array.isArray(commands) ? commands : [commands]
+  return [
+    envCandidate,
+    ...commandList.flatMap((command) => runtimeExecutableCandidates(app, "tools", command)),
+    ...commandList.map((command) => commandExists(executableName(command))),
+    ...commandList.map((command) => commandExists(command)),
+  ].filter(Boolean)
+}
+
+function resolveToolBinary(app, commands, envVar = "") {
+  return toolCandidates(app, commands, envVar).find(executableExists) || ""
+}
+
 function getQemuName(arch = "x64") {
   const exe = process.platform === "win32" ? ".exe" : ""
   return arch === "arm64" ? `qemu-system-aarch64${exe}` : `qemu-system-x86_64${exe}`
 }
 
 function qemuCandidates(app, arch = "x64") {
-  if (process.env.WORKTOPER_QEMU) return [process.env.WORKTOPER_QEMU]
   const qemuName = getQemuName(arch)
-  const runtimeCandidates = getRuntimeRoots(app).flatMap((runtimeRoot) => [
-    path.join(runtimeRoot, "qemu", process.platform, qemuName),
-    path.join(runtimeRoot, "qemu", qemuName),
-  ])
   return [
-    ...runtimeCandidates,
+    process.env.WORKTOPER_QEMU,
+    ...runtimeExecutableCandidates(app, "qemu", qemuName),
     ...platformExecutableCandidates(qemuName),
     commandExists(qemuName),
   ].filter(Boolean)
 }
 
 function resolveQemuBinary(app, arch = "x64") {
-  return qemuCandidates(app, arch).find(fileExists) || ""
+  return qemuCandidates(app, arch).find(executableExists) || ""
+}
+
+function resolveQemuDataDirectory(qemu) {
+  const directory = path.join(path.dirname(qemu), "share", "qemu")
+  return fileExists(directory) ? directory : ""
 }
 
 function resolveVmImage(app, arch = "x64") {
@@ -372,9 +415,15 @@ function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCo
   })
 }
 
-function extractVmArchive(archive, targetDirectory, onLog) {
+function extractVmArchive(app, archive, targetDirectory, onLog) {
   fs.mkdirSync(targetDirectory, { recursive: true })
-  const result = spawnSync("tar", ["-xJf", archive, "-C", targetDirectory], { encoding: "utf8" })
+  const tar = resolveToolBinary(app, ["tar", "bsdtar"], "WORKTOPER_TAR")
+  if (!tar) {
+    const searched = toolCandidates(app, ["tar", "bsdtar"], "WORKTOPER_TAR").join(", ")
+    throw new Error(`VM 镜像解压失败：未找到 tar/bsdtar。请将解压工具放入 runtime/tools/${process.platform}/，或安装系统 tar。已查找：${searched || "无"}`)
+  }
+  onLog?.(`[WorkToper] Archive tool: ${tar}`)
+  const result = spawnSync(tar, ["-xJf", archive, "-C", targetDirectory], { encoding: "utf8" })
   const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
   if (output) onLog?.(output)
   if (result.status !== 0) {
@@ -466,14 +515,80 @@ function resolveBackgroundDirectory(app) {
   }) || ""
 }
 
-function getAccelArgs() {
-  if (process.env.WORKTOPER_QEMU_ACCEL) {
-    return ["-accel", process.env.WORKTOPER_QEMU_ACCEL]
+function preferredAccelerator() {
+  if (process.env.WORKTOPER_QEMU_ACCEL) return process.env.WORKTOPER_QEMU_ACCEL
+  if (process.platform === "darwin") return "hvf"
+  if (process.platform === "linux") return "kvm"
+  if (process.platform === "win32") return "whpx"
+  return "tcg"
+}
+
+function probeQemuAccelerator(qemu, accelerator, qemuDataDirectory) {
+  if (accelerator === "tcg") return { available: true, detail: "" }
+  const acceleratorName = accelerator.split(",", 1)[0]
+  if (process.platform === "darwin" && acceleratorName === "hvf") {
+    const support = spawnSync("/usr/sbin/sysctl", ["-n", "kern.hv_support"], { encoding: "utf8", windowsHide: true })
+    if (support.status !== 0 || support.stdout.trim() !== "1") {
+      return { available: false, detail: "macOS Hypervisor Framework is unavailable on this host" }
+    }
+    const signature = spawnSync("/usr/bin/codesign", ["-d", "--entitlements", "-", qemu], { encoding: "utf8", windowsHide: true })
+    const entitlements = [signature.stdout, signature.stderr].filter(Boolean).join("\n")
+    if (signature.status !== 0 || !/com\.apple\.security\.hypervisor[\s\S]{0,120}(?:true|<true)/i.test(entitlements)) {
+      return { available: false, detail: "bundled QEMU is missing com.apple.security.hypervisor entitlement" }
+    }
+    return { available: true, detail: "" }
   }
-  if (process.platform === "darwin") return ["-accel", "hvf", "-accel", "tcg"]
-  if (process.platform === "linux") return ["-accel", "kvm", "-accel", "tcg"]
-  if (process.platform === "win32") return ["-accel", "whpx", "-accel", "tcg"]
-  return ["-accel", "tcg"]
+  if (process.platform === "linux" && acceleratorName === "kvm") {
+    try {
+      fs.accessSync("/dev/kvm", fs.constants.R_OK | fs.constants.W_OK)
+      return { available: true, detail: "" }
+    } catch {
+      return { available: false, detail: "/dev/kvm is unavailable or inaccessible" }
+    }
+  }
+  const args = [
+    ...(qemuDataDirectory ? ["-L", qemuDataDirectory] : []),
+    "-accel", accelerator,
+    "-machine", "q35",
+    "-nodefaults",
+    "-display", "none",
+    "-monitor", "none",
+    "-serial", "none",
+    "-parallel", "none",
+    "-qmp", "stdio",
+    "-S",
+  ]
+  const input = [
+    JSON.stringify({ execute: "qmp_capabilities" }),
+    JSON.stringify({ execute: "quit" }),
+    "",
+  ].join("\n")
+  const result = spawnSync(qemu, args, {
+    encoding: "utf8",
+    input,
+    timeout: 5000,
+    windowsHide: true,
+  })
+  if (!result.error && result.status === 0) return { available: true, detail: "" }
+  const detail = [result.error?.message, result.stderr, result.stdout]
+    .filter(Boolean)
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /error|failed|could not|not available|permission|entitlement|access/i.test(line))
+  return {
+    available: false,
+    detail: detail || `QEMU exited with status ${result.status ?? "unknown"}`,
+  }
+}
+
+function resolveQemuAcceleration(qemu, qemuDataDirectory) {
+  const preferred = preferredAccelerator()
+  const probe = probeQemuAccelerator(qemu, preferred, qemuDataDirectory)
+  if (probe.available) {
+    return { args: ["-accel", preferred], name: preferred, fallbackReason: "" }
+  }
+  return { args: ["-accel", "tcg"], name: "tcg", fallbackReason: probe.detail }
 }
 
 function getVideoArgs(arch = "x64") {
@@ -605,18 +720,19 @@ function getDisplayConfig({ vncTcpPort, vncWebSocketPort }) {
   }
 }
 
-function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs, sharedDirectory, backgroundDirectory }) {
+function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, displayArgs, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs }) {
   const hostForwards = [
     `hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
     `hostfwd=tcp:127.0.0.1:${vncTcpPort}-:5900`,
   ].join(",")
   const args = [
-    ...getAccelArgs(),
+    ...(qemuDataDirectory ? ["-L", qemuDataDirectory] : []),
+    ...accelArgs,
     "-name", "WorkToper Agent OS Linux Desktop",
     "-m", String(memoryMb),
     "-smp", String(cpus),
     "-machine", "q35",
-    "-cpu", process.env.WORKTOPER_QEMU_CPU || "max",
+    "-cpu", cpuModel,
     "-monitor", "none",
     ...displayArgs,
     ...getVideoArgs(arch),
@@ -785,7 +901,7 @@ class VmManager {
       this.update({ phase: "loading", detail: "正在解压 Linux 镜像", bootProgress: 36, diskActive: true, network: "connected" })
       this.send("worktoper:vm:boot", `[WorkToper] Extracting VM archive: ${archive}\r\n`)
       if (fileExists(extractDirectory)) fs.rmSync(extractDirectory, { recursive: true, force: true })
-      extractVmArchive(archive, extractDirectory, (line) => this.send("worktoper:vm:boot", `${line}\r\n`))
+      extractVmArchive(this.app, archive, extractDirectory, (line) => this.send("worktoper:vm:boot", `${line}\r\n`))
 
       this.update({ phase: "loading", detail: "正在安装 Linux 镜像", bootProgress: 54, diskActive: true, network: "connected" })
       installExtractedVmImage({ extractedDirectory: extractDirectory, disk, arch })
@@ -812,7 +928,7 @@ class VmManager {
     const disk = resolveVmImage(this.app, arch)
     if (!qemu || !fileExists(qemu)) {
       const searched = qemuCandidates(this.app, arch).join(", ")
-      throw new Error(`未找到 QEMU ${getQemuName(arch)}。请安装 QEMU，或设置 WORKTOPER_QEMU 指向随应用打包的 QEMU 二进制。已查找：${searched || "无"}`)
+      throw new Error(`应用内置 QEMU ${getQemuName(arch)} 缺失或不可执行，请重新安装完整的 WorkToper Agent OS 安装包。已查找：${searched || "无"}`)
     }
     await this.ensureVmImageAvailable({ arch, disk })
     const seed = resolveSeedImage(this.app, arch)
@@ -838,8 +954,11 @@ class VmManager {
     const cpus = Number(process.env.WORKTOPER_VM_CPUS || settings.cpus || Math.max(2, Math.min(os.cpus().length, 4)))
     const sharedDirectory = typeof settings.sharedDirectory === "string" && fileExists(settings.sharedDirectory) ? settings.sharedDirectory : ""
     const backgroundDirectory = resolveBackgroundDirectory(this.app)
+    const qemuDataDirectory = resolveQemuDataDirectory(qemu)
+    const acceleration = resolveQemuAcceleration(qemu, qemuDataDirectory)
+    const cpuModel = process.env.WORKTOPER_QEMU_CPU || (acceleration.name === "tcg" ? "max" : "host")
     this.sharedDirectory = sharedDirectory
-    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, qgaSocketPath, displayArgs: display.args, sharedDirectory, backgroundDirectory })
+    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
     this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
@@ -855,6 +974,10 @@ class VmManager {
       `[WorkToper] Memory: ${memoryMb} MB`,
       `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
       `[WorkToper] Background directory: ${backgroundDirectory || "none"}`,
+      `[WorkToper] QEMU firmware: ${qemuDataDirectory || "system default"}`,
+      `[WorkToper] QEMU accelerator: ${acceleration.name}`,
+      `[WorkToper] QEMU CPU model: ${cpuModel}`,
+      acceleration.fallbackReason ? `[WorkToper] Hardware acceleration unavailable, using TCG: ${acceleration.fallbackReason}` : "",
       `[WorkToper] Launch command: ${qemuCommandLine(qemu, args)}`,
       "",
     ].filter((line) => line !== "").join("\r\n"))
@@ -1163,50 +1286,24 @@ class VmManager {
       "#!/bin/sh",
       "set -eu",
       "if command -v code >/dev/null 2>&1; then exit 0; fi",
-      "arch=$(dpkg --print-architecture)",
-      "install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d",
-      "curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor >/tmp/worktoper-packages-microsoft.gpg",
-      "install -m 0644 /tmp/worktoper-packages-microsoft.gpg /usr/share/keyrings/packages.microsoft.gpg",
-      "printf 'deb [arch=%s signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main\\n' \"$arch\" >/etc/apt/sources.list.d/vscode.list",
-      "DEBIAN_FRONTEND=noninteractive apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y code",
+      "echo 'Microsoft VS Code is missing from the WorkToper VM image.' >&2",
+      "exit 1",
       "WORKTOPER_INSTALL_VSCODE",
       "chmod 0755 /usr/local/sbin/worktoper-install-vscode",
       "cat >/usr/local/sbin/worktoper-install-chrome <<'WORKTOPER_INSTALL_CHROME'",
       "#!/bin/sh",
       "set -eu",
       "if command -v google-chrome >/dev/null 2>&1; then exit 0; fi",
-      "arch=$(dpkg --print-architecture)",
-      "[ \"$arch\" = amd64 ] || exit 1",
-      "install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d",
-      "curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor >/tmp/worktoper-google-linux.gpg",
-      "install -m 0644 /tmp/worktoper-google-linux.gpg /usr/share/keyrings/google-linux-keyring.gpg",
-      "printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main\\n' >/etc/apt/sources.list.d/google-chrome.list",
-      "DEBIAN_FRONTEND=noninteractive apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-stable",
+      "echo 'Google Chrome is missing from the WorkToper VM image.' >&2",
+      "exit 1",
       "WORKTOPER_INSTALL_CHROME",
       "chmod 0755 /usr/local/sbin/worktoper-install-chrome",
       "cat >/usr/local/sbin/worktoper-install-layan-theme <<'WORKTOPER_INSTALL_LAYAN'",
       "#!/bin/sh",
       "set -eu",
-      "packages='git ca-certificates gtk2-engines-murrine gtk2-engines-pixbuf sassc papirus-icon-theme fonts-noto fonts-noto-cjk fonts-noto-color-emoji librsvg2-common'",
-      "missing=''",
-      "for package in $packages; do",
-      "  dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null | grep -q 'install ok installed' || missing=\"$missing $package\"",
-      "done",
-      "if [ -n \"$missing\" ]; then",
-      "  DEBIAN_FRONTEND=noninteractive apt-get update",
-      "  DEBIAN_FRONTEND=noninteractive apt-get install -y $missing",
-      "fi",
-      "install -d -m 0755 /opt/worktoper",
-      "if [ -d /opt/worktoper/Layan-gtk-theme/.git ]; then",
-      "  git -C /opt/worktoper/Layan-gtk-theme pull --ff-only",
-      "else",
-      "  rm -rf /opt/worktoper/Layan-gtk-theme",
-      "  git clone --depth 1 https://github.com/vinceliuice/Layan-gtk-theme.git /opt/worktoper/Layan-gtk-theme",
-      "fi",
-      "cd /opt/worktoper/Layan-gtk-theme",
-      "bash ./install.sh -d /usr/share/themes -c dark -s solid || bash ./install.sh -d /usr/share/themes -c dark || bash ./install.sh -d /usr/share/themes",
+      "find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' | grep -q . && exit 0",
+      "echo 'Layan GTK theme is missing from the WorkToper VM image.' >&2",
+      "exit 1",
       "WORKTOPER_INSTALL_LAYAN",
       "cat >/usr/local/bin/worktoper-apply-layan-theme <<'WORKTOPER_APPLY_LAYAN'",
       "#!/bin/sh",
@@ -1292,16 +1389,6 @@ class VmManager {
       "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
       "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
       "cd /home/worktoper",
-      "if ! command -v google-chrome >/dev/null 2>&1; then",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-chrome-install.pid ] && install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    nohup /usr/local/sbin/worktoper-install-chrome >/tmp/worktoper-install-chrome.log 2>&1 & echo $! >/tmp/worktoper-chrome-install.pid",
-      "  fi",
-      "  if command -v xterm >/dev/null 2>&1; then",
-      "    exec xterm -T 'Installing Chrome' -e sh -lc 'install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true); while ! command -v google-chrome >/dev/null 2>&1; do clear; echo \"正在安装 Google Chrome，请稍候...\"; echo; tail -n 22 /tmp/worktoper-install-chrome.log 2>/dev/null || true; if [ -n \"$install_pid\" ] && ! kill -0 \"$install_pid\" >/dev/null 2>&1; then break; fi; sleep 3; done; if command -v google-chrome >/dev/null 2>&1; then exec google-chrome --no-sandbox; fi; exec chromium --no-sandbox || exec chromium-browser --no-sandbox'",
-      "  fi",
-      "fi",
       "exec google-chrome --no-sandbox \"$@\" 2>/tmp/worktoper-chrome.log || exec chromium --no-sandbox \"$@\" 2>/tmp/worktoper-chromium.log || exec chromium-browser --no-sandbox \"$@\" 2>/tmp/worktoper-chromium-browser.log",
       "WORKTOPER_BROWSER",
       "cat >/usr/local/bin/worktoper-open-code <<'WORKTOPER_CODE'",
@@ -1312,15 +1399,8 @@ class VmManager {
       "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
       "cd /home/worktoper",
       "if ! command -v code >/dev/null 2>&1; then",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-vscode-install.pid ] && install_pid=$(cat /tmp/worktoper-vscode-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    nohup /usr/local/sbin/worktoper-install-vscode >/tmp/worktoper-install-vscode.log 2>&1 & echo $! >/tmp/worktoper-vscode-install.pid",
-      "  fi",
-      "  if command -v xterm >/dev/null 2>&1; then",
-      "    exec xterm -T 'Installing VS Code' -e sh -lc 'while ! command -v code >/dev/null 2>&1; do clear; echo \"正在安装 Microsoft VS Code，请稍候...\"; echo; tail -n 22 /tmp/worktoper-install-vscode.log 2>/dev/null || true; sleep 3; done; exec code --no-sandbox'",
-      "  fi",
-      "  while ! command -v code >/dev/null 2>&1; do sleep 3; done",
+      "  command -v xmessage >/dev/null 2>&1 && xmessage -center 'Microsoft VS Code is missing from this VM image.' || true",
+      "  exit 127",
       "fi",
       "exec code --no-sandbox \"$@\" 2>/tmp/worktoper-code.log",
       "WORKTOPER_CODE",
@@ -1329,22 +1409,8 @@ class VmManager {
       "if dpkg-query -W -f='${Status}' codium vscodium code-oss 2>/dev/null | grep -q 'install ok installed'; then",
       "  nohup sh -lc 'DEBIAN_FRONTEND=noninteractive apt-get purge -y codium vscodium code-oss' >/tmp/worktoper-remove-vscodium.log 2>&1 &",
       "fi",
-      "if ! command -v code >/dev/null 2>&1; then",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-vscode-install.pid ] && install_pid=$(cat /tmp/worktoper-vscode-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    echo '$ install Microsoft VS Code in background'",
-      "    nohup /usr/local/sbin/worktoper-install-vscode >/tmp/worktoper-install-vscode.log 2>&1 & echo $! >/tmp/worktoper-vscode-install.pid",
-      "  fi",
-      "fi",
-      "if ! command -v google-chrome >/dev/null 2>&1; then",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-chrome-install.pid ] && install_pid=$(cat /tmp/worktoper-chrome-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    echo '$ install Google Chrome in background'",
-      "    nohup /usr/local/sbin/worktoper-install-chrome >/tmp/worktoper-install-chrome.log 2>&1 & echo $! >/tmp/worktoper-chrome-install.pid",
-      "  fi",
-      "fi",
+      "command -v code >/dev/null 2>&1 || echo '$ Microsoft VS Code missing from VM image'",
+      "command -v google-chrome >/dev/null 2>&1 || echo '$ Google Chrome missing from VM image'",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Terminal' 'Exec=xfce4-terminal' 'Icon=utilities-terminal' 'Terminal=false' 'Categories=System;TerminalEmulator;' > /home/worktoper/Desktop/Terminal.desktop",
       "cat >/usr/local/bin/worktoper-trust-desktop-launchers <<'WORKTOPER_TRUST_DESKTOP'",
       "#!/bin/sh",
@@ -1383,12 +1449,7 @@ class VmManager {
       "if find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' | grep -q .; then",
       "  nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-apply-layan-theme' >/tmp/worktoper-apply-layan-theme.log 2>&1 &",
       "else",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-layan-theme-install.pid ] && install_pid=$(cat /tmp/worktoper-layan-theme-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    echo '$ install Layan GTK theme in background'",
-      "    nohup sh -lc '/usr/local/sbin/worktoper-install-layan-theme && runuser -u worktoper -- /usr/local/bin/worktoper-apply-layan-theme' >/tmp/worktoper-install-layan-theme.log 2>&1 & echo $! >/tmp/worktoper-layan-theme-install.pid",
-      "  fi",
+      "  echo '$ Layan GTK theme missing from VM image'",
       "fi",
       "chmod +x /home/worktoper/Desktop/*.desktop 2>/dev/null || true",
       "chown -R worktoper:worktoper /home/worktoper/Desktop /home/worktoper/.config",
@@ -1414,15 +1475,7 @@ class VmManager {
     const command = [
       "set -u",
       "if ! command -v x11vnc >/dev/null 2>&1; then",
-      "  install_pid=''",
-      "  [ -f /tmp/worktoper-x11vnc-install.pid ] && install_pid=$(cat /tmp/worktoper-x11vnc-install.pid 2>/dev/null || true)",
-      "  if [ -z \"$install_pid\" ] || ! kill -0 \"$install_pid\" >/dev/null 2>&1; then",
-      "    echo '$ install x11vnc in background'",
-      "    nohup sh -lc 'DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y x11vnc' >/tmp/worktoper-apt-x11vnc.log 2>&1 & echo $! >/tmp/worktoper-x11vnc-install.pid",
-      "  else",
-      "    echo '$ x11vnc install already running'",
-      "  fi",
-      "  tail -n 40 /tmp/worktoper-apt-x11vnc.log 2>/dev/null || true",
+      "  echo '$ x11vnc missing from VM image'",
       "  exit 1",
       "fi",
       "if ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1; then",
@@ -1639,10 +1692,6 @@ class VmManager {
     const command = [
       "set -u",
       "printf 'worktoper:worktoper\\n' | chpasswd || true",
-      "if ! command -v xflock4 >/dev/null 2>&1 && ! command -v xfce4-screensaver-command >/dev/null 2>&1 && ! command -v light-locker-command >/dev/null 2>&1; then",
-      "  DEBIAN_FRONTEND=noninteractive apt-get update >/tmp/worktoper-locker-apt.log 2>&1 || true",
-      "  DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4-screensaver light-locker >>/tmp/worktoper-locker-apt.log 2>&1 || true",
-      "fi",
       "runuser -u worktoper -- sh -lc 'export DISPLAY=:0; export XDG_RUNTIME_DIR=/run/user/1000; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority; xflock4 || xfce4-screensaver-command --lock || light-locker-command -l || dm-tool lock'",
     ].join("\n")
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })

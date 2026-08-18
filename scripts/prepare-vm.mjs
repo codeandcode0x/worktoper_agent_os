@@ -67,6 +67,48 @@ function which(command) {
   return result.stdout.split(/\r?\n/).find(Boolean) || ""
 }
 
+function executableExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return false
+    if (process.platform === "win32") return true
+    fs.accessSync(filePath, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function executableName(command) {
+  if (process.platform !== "win32") return command
+  return /\.(exe|cmd|bat)$/i.test(command) ? command : `${command}.exe`
+}
+
+function runtimeExecutableCandidates(group, command) {
+  const name = executableName(command)
+  const platformArch = `${process.platform}-${process.arch}`
+  const runtimeRoot = path.join(root, "runtime")
+  return [
+    path.join(runtimeRoot, group, platformArch, name),
+    path.join(runtimeRoot, group, process.platform, process.arch, name),
+    path.join(runtimeRoot, group, process.platform, name),
+    path.join(runtimeRoot, group, name),
+  ]
+}
+
+function executableCandidates(commands, { group = "tools", envVar = "" } = {}) {
+  const commandList = Array.isArray(commands) ? commands : [commands]
+  return [
+    envVar ? process.env[envVar] : "",
+    ...commandList.flatMap((command) => runtimeExecutableCandidates(group, command)),
+    ...commandList.map((command) => which(executableName(command))),
+    ...commandList.map((command) => which(command)),
+  ].filter(Boolean)
+}
+
+function resolveExecutable(commands, options = {}) {
+  return executableCandidates(commands, options).find(executableExists) || ""
+}
+
 function resolveBackgroundSourceDir() {
   const candidates = [
     path.join(root, "bg"),
@@ -584,32 +626,40 @@ function createSeedIso() {
   const graftArgs = hasBackgrounds
     ? ["-graft-points", `user-data=${userData}`, `meta-data=${metaData}`, `backgrounds=${seedBackgroundDir}`]
     : [userData, metaData]
-  if (which("genisoimage")) {
-    run("genisoimage", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
+  const genisoimage = resolveExecutable("genisoimage", { group: "tools", envVar: "WORKTOPER_GENISOIMAGE" })
+  if (genisoimage) {
+    run(genisoimage, ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
-  if (which("mkisofs")) {
-    run("mkisofs", ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
+  const mkisofs = resolveExecutable("mkisofs", { group: "tools", envVar: "WORKTOPER_MKISOFS" })
+  if (mkisofs) {
+    run(mkisofs, ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
-  if (which("xorriso")) {
-    run("xorriso", ["-as", "mkisofs", "-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
+  const xorriso = resolveExecutable("xorriso", { group: "tools", envVar: "WORKTOPER_XORRISO" })
+  if (xorriso) {
+    run(xorriso, ["-as", "mkisofs", "-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
     return
   }
   if (process.platform === "darwin" && which("hdiutil")) {
     run("hdiutil", ["makehybrid", "-o", seedIso, "-iso", "-joliet", "-default-volume-name", "cidata", seedDir])
     return
   }
-  if (!hasBackgrounds && which("cloud-localds")) {
-    run("cloud-localds", [seedIso, userData, metaData])
+  const cloudLocalds = resolveExecutable("cloud-localds", { group: "tools", envVar: "WORKTOPER_CLOUD_LOCALDS" })
+  if (!hasBackgrounds && cloudLocalds) {
+    run(cloudLocalds, [seedIso, userData, metaData])
     return
   }
-  throw new Error("Cannot create cloud-init seed ISO. Install cloud-image-utils, genisoimage, mkisofs, xorriso, or run on macOS with hdiutil.")
+  throw new Error("Cannot create cloud-init seed ISO. Install cloud-image-utils, genisoimage, mkisofs, xorriso, run on macOS with hdiutil, or bundle one of these tools in runtime/tools/<platform>/.")
 }
 
 function qemuSystemBinary() {
   const name = arch === "arm64" ? "qemu-system-aarch64" : "qemu-system-x86_64"
-  return which(name)
+  return resolveExecutable(name, { group: "qemu", envVar: "WORKTOPER_QEMU" })
+}
+
+function qemuImgBinary() {
+  return resolveExecutable("qemu-img", { group: "qemu", envVar: "WORKTOPER_QEMU_IMG" })
 }
 
 async function initializeVmImage() {
@@ -621,14 +671,15 @@ async function initializeVmImage() {
   if (!qemu) throw new Error("qemu-system is required to initialize the VM image.")
   const sshPort = await getFreePort()
   const serialPort = await getFreePort()
-  const accel = process.platform === "darwin" ? ["-accel", "hvf", "-accel", "tcg"] : ["-accel", "tcg"]
+  const accelerator = process.env.WORKTOPER_QEMU_ACCEL || (process.platform === "darwin" ? "hvf" : "tcg")
+  const cpuModel = process.env.WORKTOPER_QEMU_CPU || (accelerator === "tcg" ? "max" : "host")
   const args = [
-    ...accel,
+    "-accel", accelerator,
     "-name", "WorkToper Agent OS Image Initializer",
     "-m", String(process.env.WORKTOPER_VM_INIT_MEMORY || 4096),
     "-smp", String(process.env.WORKTOPER_VM_INIT_CPUS || Math.max(2, Math.min(os.cpus().length, 4))),
     "-machine", "q35",
-    "-cpu", process.env.WORKTOPER_QEMU_CPU || "max",
+    "-cpu", cpuModel,
     "-display", "none",
     "-monitor", "none",
     "-vga", "std",
@@ -724,9 +775,12 @@ async function initializeVmImage() {
 
 async function main() {
   fs.mkdirSync(runtimeDir, { recursive: true })
-  if (!which("qemu-img")) {
-    throw new Error("qemu-img is required. Install QEMU first, then rerun this script.")
+  const qemuImg = qemuImgBinary()
+  if (!qemuImg) {
+    const searched = executableCandidates("qemu-img", { group: "qemu", envVar: "WORKTOPER_QEMU_IMG" }).join(", ")
+    throw new Error(`qemu-img is required. Install QEMU, set WORKTOPER_QEMU_IMG, or bundle qemu-img in runtime/qemu/${process.platform}/. Searched: ${searched || "none"}`)
   }
+  console.log(`Using qemu-img: ${qemuImg}`)
   if (!fs.existsSync(baseImage) && fs.existsSync(legacyBaseImage)) {
     fs.copyFileSync(legacyBaseImage, baseImage)
     console.log(`Using cached base image: ${legacyBaseImage}`)
@@ -742,8 +796,8 @@ async function main() {
     console.log(`Removed existing VM disk for rebuild: ${vmImage}`)
   }
   if (!fs.existsSync(vmImage)) {
-    run("qemu-img", ["convert", "-O", "qcow2", baseImage, vmImage])
-    run("qemu-img", ["resize", vmImage, process.env.WORKTOPER_VM_SIZE || "32G"])
+    run(qemuImg, ["convert", "-O", "qcow2", baseImage, vmImage])
+    run(qemuImg, ["resize", vmImage, process.env.WORKTOPER_VM_SIZE || "32G"])
     fs.rmSync(initializedMarker, { force: true })
   } else {
     console.log(`Using existing VM disk: ${vmImage}`)
