@@ -120,8 +120,9 @@ function getQgaSocketPath(app) {
 }
 
 class GuestAgent {
-  constructor(socketPath) {
+  constructor(socketPath, port = 0) {
     this.socketPath = socketPath
+    this.port = port
     this.socket = null
     this.buffer = ""
     this.queue = []
@@ -129,8 +130,10 @@ class GuestAgent {
   }
 
   connect() {
-    if (!this.socketPath || this.socket) return
-    this.socket = net.createConnection(this.socketPath)
+    if ((!this.socketPath && !this.port) || this.socket) return
+    this.socket = this.port
+      ? net.createConnection({ host: "127.0.0.1", port: this.port })
+      : net.createConnection(this.socketPath)
     this.socket.on("data", (chunk) => this.onData(chunk))
     this.socket.on("error", () => this.close())
     this.socket.on("close", () => this.close())
@@ -720,7 +723,11 @@ function getDisplayConfig({ vncTcpPort, vncWebSocketPort }) {
   }
 }
 
-function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, displayArgs, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs }) {
+function getSharedSecurityModel() {
+  return process.env.WORKTOPER_SHARED_SECURITY_MODEL || (process.platform === "darwin" ? "mapped-xattr" : process.platform === "win32" ? "none" : "mapped-file")
+}
+
+function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs }) {
   const hostForwards = [
     `hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
     `hostfwd=tcp:127.0.0.1:${vncTcpPort}-:5900`,
@@ -751,9 +758,15 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb,
       "-device", "virtio-serial",
       "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
     )
+  } else if (qgaPort) {
+    args.push(
+      "-chardev", `socket,host=127.0.0.1,port=${qgaPort},server=on,wait=off,id=qga0`,
+      "-device", "virtio-serial",
+      "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+    )
   }
   if (sharedDirectory && fileExists(sharedDirectory)) {
-    args.push("-virtfs", `local,path=${qemuOptionValue(sharedDirectory)},mount_tag=worktoper_share,security_model=mapped-xattr,id=worktoper_share,multidevs=remap`)
+    args.push("-virtfs", `local,path=${qemuOptionValue(sharedDirectory)},mount_tag=worktoper_share,security_model=${getSharedSecurityModel()},id=worktoper_share,multidevs=remap`)
   }
   if (backgroundDirectory) {
     args.push("-virtfs", `local,path=${backgroundDirectory},mount_tag=worktoper_bg,security_model=mapped-xattr,readonly=on,id=worktoper_bg`)
@@ -818,6 +831,7 @@ class VmManager {
     this.vncProxyServer = null
     this.vncTcpPort = 0
     this.sshPort = 0
+    this.qgaPort = 0
     this.sharedDirectory = ""
     this.pendingDesktopSize = null
     this.resizeTimer = null
@@ -949,6 +963,7 @@ class VmManager {
     })
     const qgaSocketPath = getQgaSocketPath(this.app)
     if (qgaSocketPath) fs.rmSync(qgaSocketPath, { force: true })
+    const qgaPort = process.platform === "win32" ? await getFreePort() : 0
     const settings = this.getSettings?.() || {}
     const memoryMb = Number(process.env.WORKTOPER_VM_MEMORY || settings.memoryMb || 4096)
     const cpus = Number(process.env.WORKTOPER_VM_CPUS || settings.cpus || Math.max(2, Math.min(os.cpus().length, 4)))
@@ -958,7 +973,7 @@ class VmManager {
     const acceleration = resolveQemuAcceleration(qemu, qemuDataDirectory)
     const cpuModel = process.env.WORKTOPER_QEMU_CPU || (acceleration.name === "tcg" ? "max" : "host")
     this.sharedDirectory = sharedDirectory
-    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
+    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
     this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
@@ -973,6 +988,8 @@ class VmManager {
       `[WorkToper] CPU: ${cpus}`,
       `[WorkToper] Memory: ${memoryMb} MB`,
       `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
+      sharedDirectory ? `[WorkToper] Shared security model: ${getSharedSecurityModel()}` : "",
+      sharedDirectory ? `[WorkToper] Shared guest mount: /home/worktoper/Shared` : "",
       `[WorkToper] Background directory: ${backgroundDirectory || "none"}`,
       `[WorkToper] QEMU firmware: ${qemuDataDirectory || "system default"}`,
       `[WorkToper] QEMU accelerator: ${acceleration.name}`,
@@ -1016,6 +1033,7 @@ class VmManager {
       this.vncProxyServer = null
       this.vncTcpPort = 0
       this.sshPort = 0
+      this.qgaPort = 0
       this.update({ phase: code === 0 ? "idle" : "error", detail: this.lastErrorDetail || `Linux VM 已退出: ${signal || code}`, cpuActive: false, diskActive: false, network: "disconnected" })
     })
 
@@ -1036,20 +1054,21 @@ class VmManager {
       vncWebSocketUrl: display.vncWebSocketUrl,
     })
     this.connectSerial(serialPort)
-    this.connectGuestAgent(qgaSocketPath)
+    this.qgaPort = qgaPort
+    this.connectGuestAgent(qgaSocketPath, qgaPort)
     setTimeout(() => {
       if (this.process && this.state.phase !== "ready") this.update({ phase: "loading", detail: "QEMU 已启动，正在等待 Linux 桌面完成启动", bootProgress: Math.max(this.state.bootProgress, 68), network: "connecting", diskActive: true })
     }, 1200)
     return this.connection
   }
 
-  connectGuestAgent(socketPath) {
-    if (!socketPath) return
+  connectGuestAgent(socketPath, port = 0) {
+    if (!socketPath && !port) return
     let attempts = 0
     const connect = () => {
       if (!this.process || this.guestAgent) return
       attempts += 1
-      const agent = new GuestAgent(socketPath)
+      const agent = new GuestAgent(socketPath, port)
       agent.connect()
       const timer = setTimeout(() => {
         if (this.guestAgent !== agent) agent.close()
@@ -1079,8 +1098,8 @@ class VmManager {
         if (status.exitcode === 0) {
           const vncReady = await this.ensureEmbeddedVnc()
           if (vncReady) {
-            await this.ensureSharedDirectory()
-            this.markDesktopReady("lightdm / XFCE / x11vnc readiness check")
+            const sharedDirectoryReady = await this.ensureSharedDirectory()
+            this.markDesktopReady("lightdm / XFCE / x11vnc readiness check", sharedDirectoryReady)
             return
           }
           this.update({ phase: "loading", detail: "XFCE 已启动，正在准备内嵌桌面画面", bootProgress: Math.max(this.state.bootProgress, 96), network: "connected" })
@@ -1140,7 +1159,12 @@ class VmManager {
       return [
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Shared",
       "install -d -m 0755 -o worktoper -g worktoper /home/worktoper/Desktop",
-      "modprobe 9p 9pnet 9pnet_virtio >/dev/null 2>&1 || true",
+      "if ! modprobe 9pnet_virtio >/dev/null 2>&1 || ! modprobe 9p >/dev/null 2>&1; then",
+      "  echo '[WorkToper] Guest kernel does not support virtio 9p shared directories' >&2",
+      "  echo \"[WorkToper] Guest kernel: $(uname -r)\" >&2",
+      "  grep -E 'CONFIG_(NET_9P|NET_9P_VIRTIO|9P_FS)=' /boot/config-\"$(uname -r)\" 2>/dev/null >&2 || true",
+      "  exit 32",
+      "fi",
       "if mountpoint -q /home/worktoper/Shared >/dev/null 2>&1 && ! findmnt -n -o SOURCE /home/worktoper/Shared 2>/dev/null | grep -Fx worktoper_share >/dev/null 2>&1; then",
       "  umount /home/worktoper/Shared >/dev/null 2>&1 || true",
       "fi",
@@ -1160,7 +1184,8 @@ class VmManager {
       "  if runuser -u worktoper -- sh -lc 'test_file=/home/worktoper/Shared/.worktoper-write-test-$$; printf ok >\"$test_file\" && rm -f \"$test_file\"'; then",
       "    echo '[WorkToper] Shared directory write test passed'",
       "  else",
-      "    echo '[WorkToper] Shared directory is mounted but not writable by worktoper user'",
+      "    echo '[WorkToper] Shared directory is mounted but not writable by worktoper user' >&2",
+      "    exit 33",
       "  fi",
       "fi",
       "cat >/usr/local/bin/worktoper-share-permissions <<'WORKTOPER_SHARE_PERMISSIONS'",
@@ -1213,7 +1238,16 @@ class VmManager {
     const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
     if (text) this.send("worktoper:vm:boot", `\r\n[WorkToper] Shared directory setup\r\n${text}\r\n`)
     if (this.sharedDirectory && status.exitcode !== 0) {
-      this.update({ detail: "共享目录挂载失败，请检查宿主机目录权限", diskActive: false })
+      const unsupportedKernel = /Guest kernel does not support virtio 9p shared directories/i.test(text)
+      const notWritable = /Shared directory is mounted but not writable by worktoper user/i.test(text)
+      this.update({
+        detail: unsupportedKernel
+          ? "当前 VM 镜像内核不支持目录共享，请更新或重新下载 VM 镜像"
+          : notWritable
+            ? "共享目录已挂载，但当前宿主机目录不可写，请检查目录权限"
+            : "共享目录挂载失败，请检查宿主机目录权限和启动日志",
+        diskActive: false,
+      })
       return false
     }
     return true
@@ -1525,11 +1559,18 @@ class VmManager {
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Linux desktop startup status\r\n${text}\r\n`)
   }
 
-  markDesktopReady(source = "desktop ready") {
+  markDesktopReady(source = "desktop ready", sharedDirectoryReady = true) {
     if (this.desktopReady) return
     this.desktopReady = true
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Boot 100% - Linux desktop is ready (${source}). Embedded display is active.\r\n`)
-    this.update({ phase: "ready", detail: "Linux 桌面已就绪", bootProgress: 100, cpuActive: false, diskActive: false, network: "connected" })
+    this.update({
+      phase: "ready",
+      detail: sharedDirectoryReady ? "Linux 桌面已就绪" : this.state.detail,
+      bootProgress: 100,
+      cpuActive: false,
+      diskActive: false,
+      network: "connected",
+    })
     this.flushPendingLaunches()
     this.resizeDesktop(1920, 1080)
   }
@@ -1711,6 +1752,7 @@ class VmManager {
     this.vncProxyServer = null
     this.vncTcpPort = 0
     this.sharedDirectory = ""
+    this.qgaPort = 0
     if (this.resizeTimer) clearTimeout(this.resizeTimer)
     this.resizeTimer = null
     this.pendingDesktopSize = null

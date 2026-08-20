@@ -188,6 +188,7 @@ function writeSeedFiles() {
   fs.rmSync(seedDir, { recursive: true, force: true })
   fs.mkdirSync(seedDir, { recursive: true })
   copyBackgroundsToSeed()
+  const debianKernelArch = arch === "arm64" ? "arm64" : "amd64"
 
   const powerState = skipInitialize ? "" : `power_state:
   mode: poweroff
@@ -224,7 +225,7 @@ packages:
   - git
   - dbus-x11
   - kbd
-  - linux-image-amd64
+  - linux-image-${debianKernelArch}
   - lightdm
   - xfce4
   - xfce4-terminal
@@ -572,12 +573,37 @@ write_files:
       OnlyShowIn=XFCE;
       Terminal=false
       X-GNOME-Autostart-enabled=true
+  - path: /usr/local/sbin/worktoper-configure-shared-directory-kernel
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      kernel_arch=${debianKernelArch}
+      generic_kernel=$(find /boot -maxdepth 1 -type f -name "vmlinuz-*-$kernel_arch" ! -name '*-cloud-*' -print | sort -V | tail -n 1)
+      if [ -z "$generic_kernel" ]; then
+        echo "WorkToper VM image requires a generic Debian kernel with virtio 9p support" >&2
+        exit 1
+      fi
+      generic_version=$(basename "$generic_kernel" | sed 's/^vmlinuz-//')
+      kernel_config="/boot/config-$generic_version"
+      for option in CONFIG_NET_9P CONFIG_NET_9P_VIRTIO CONFIG_9P_FS; do
+        if ! grep -Eq "^$option=(y|m)$" "$kernel_config"; then
+          echo "WorkToper VM kernel $generic_version is missing $option" >&2
+          exit 1
+        fi
+      done
+      menu="Advanced options for Debian GNU/Linux>Debian GNU/Linux, with Linux $generic_version"
+      mkdir -p /etc/default/grub.d
+      printf 'GRUB_DEFAULT="%s"\\nGRUB_TIMEOUT=0\\n' "$menu" >/etc/default/grub.d/99-worktoper-default-kernel.cfg
+      update-grub
+      printf '%s\\n' "$generic_version" >/var/lib/worktoper-shared-directory-kernel
 runcmd:
   - systemctl enable qemu-guest-agent || true
   - systemctl enable serial-getty@ttyS0.service
   - systemctl enable serial-getty@ttyS1.service || true
   - systemctl restart ssh || systemctl restart sshd || true
-  - generic_kernel=$(ls -1 /boot/vmlinuz-*-amd64 2>/dev/null | grep -v cloud | sort -V | tail -n 1 || true); if [ -n "$generic_kernel" ]; then generic_version=$(basename "$generic_kernel" | sed 's/^vmlinuz-//'); menu="Advanced options for Debian GNU/Linux>Debian GNU/Linux, with Linux $generic_version"; mkdir -p /etc/default/grub.d; printf 'GRUB_DEFAULT="%s"\nGRUB_TIMEOUT=0\n' "$menu" >/etc/default/grub.d/99-worktoper-default-kernel.cfg; update-grub || true; fi
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-${debianKernelArch}
+  - /usr/local/sbin/worktoper-configure-shared-directory-kernel
   - mkdir -p /var/lib/lightdm/data /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local/share /run/lightdm /var/log/lightdm
   - chown -R lightdm:lightdm /var/lib/lightdm /run/lightdm /var/log/lightdm || true
   - chmod 0755 /var/lib/lightdm /run/lightdm /var/log/lightdm
@@ -759,11 +785,15 @@ async function initializeVmImage() {
     const sawPoweroff = /reboot:\s*Power down|Powering off|systemd-shutdown/i.test(combinedLog)
     const knownConfigFailure = /Failed loading yaml blob|Invalid format at line|could not find expected ':'|cloud-init\[[^\]]+\]: .*Traceback/i.test(combinedLog)
     const qemuFailed = exitCode !== 0 && !sawPoweroff
-    if (!markerComplete && (knownConfigFailure || qemuFailed || !sawPoweroff)) {
-      throw new Error(`VM image initialization did not complete cleanly. Refusing to write initialized marker. QEMU exit: ${exitCode ?? "null"}${exitSignal ? ` signal ${exitSignal}` : ""}\n${stderr}\n${serialLog.slice(-12000)}`)
-    }
     if (!markerComplete) {
-      console.warn("VM powered off after initialization, but the serial completion marker was not captured. Accepting the initialized image.")
+      const failureReason = knownConfigFailure
+        ? "cloud-init configuration failed"
+        : qemuFailed
+          ? "QEMU exited with an error"
+          : !sawPoweroff
+            ? "the VM did not power off cleanly"
+            : "the required image completion markers were not observed"
+      throw new Error(`VM image initialization failed because ${failureReason}. Refusing to publish an image without verified virtio 9p support. QEMU exit: ${exitCode ?? "null"}${exitSignal ? ` signal ${exitSignal}` : ""}\n${stderr}\n${serialLog.slice(-12000)}`)
     }
     console.log("cloud-init finished and VM powered off.")
   } catch (error) {

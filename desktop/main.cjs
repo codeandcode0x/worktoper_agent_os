@@ -1,7 +1,7 @@
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
-const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } = require("electron")
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, shell } = require("electron")
 const { createStaticServer } = require("./static-server.cjs")
 const { VmManager } = require("./vm-manager.cjs")
 
@@ -32,10 +32,16 @@ function normalizeVmSettings(input = {}) {
   const memoryMb = Number(input.memoryMb ?? defaults.memoryMb)
   const sharedDirectory = typeof input.sharedDirectory === "string" ? input.sharedDirectory.trim() : ""
   const lockPassword = typeof input.lockPassword === "string" && input.lockPassword ? input.lockPassword : defaults.lockPassword
+  let validSharedDirectory = ""
+  if (sharedDirectory) {
+    try {
+      validSharedDirectory = fs.statSync(sharedDirectory).isDirectory() ? sharedDirectory : ""
+    } catch {}
+  }
   return {
     cpus: Number.isFinite(cpus) ? Math.max(1, Math.min(maxCpus, Math.round(cpus))) : defaults.cpus,
     memoryMb: Number.isFinite(memoryMb) ? Math.max(1024, Math.min(32768, Math.round(memoryMb))) : defaults.memoryMb,
-    sharedDirectory: sharedDirectory && fs.existsSync(sharedDirectory) ? sharedDirectory : "",
+    sharedDirectory: validSharedDirectory,
     lockPassword,
   }
 }
@@ -86,6 +92,29 @@ function getWindowIconPath() {
   return candidates.find((candidate) => fs.existsSync(candidate))
 }
 
+function installApplicationMenu() {
+  const template = [
+    ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    { role: "windowMenu" },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 async function createWindow() {
   const root = getStaticRoot()
   staticServer = createStaticServer(root)
@@ -125,6 +154,14 @@ async function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow?.setAspectRatio(16 / 9)
     mainWindow?.show()
+  })
+
+  mainWindow.on("enter-full-screen", () => {
+    mainWindow?.webContents.send("worktoper:window:fullscreen-changed", true)
+  })
+
+  mainWindow.on("leave-full-screen", () => {
+    mainWindow?.webContents.send("worktoper:window:fullscreen-changed", false)
   })
 
   mainWindow.on("resize", () => {
@@ -201,6 +238,16 @@ ipcMain.handle("worktoper:vm:settings:choose-directory", async () => {
   return { canceled: result.canceled, path: result.filePaths[0] || "" }
 })
 
+ipcMain.handle("worktoper:window:fullscreen:get", () => ({
+  fullscreen: Boolean(mainWindow?.isFullScreen()),
+}))
+
+ipcMain.handle("worktoper:window:fullscreen:exit", () => {
+  if (!mainWindow) return { ok: false }
+  mainWindow.setFullScreen(false)
+  return { ok: true }
+})
+
 ipcMain.handle("worktoper:vm:lock", () => {
   if (!vmManager) throw new Error("WorkToper VM manager is not ready")
   return vmManager.lock()
@@ -225,7 +272,10 @@ ipcMain.handle("worktoper:app:close", () => {
   return { ok: true }
 })
 
-app.whenReady().then(createWindow).catch((error) => {
+app.whenReady().then(() => {
+  installApplicationMenu()
+  return createWindow()
+}).catch((error) => {
   dialog.showErrorBox("WorkToper Agent OS failed to start", error instanceof Error ? error.stack || error.message : String(error))
   app.quit()
 })

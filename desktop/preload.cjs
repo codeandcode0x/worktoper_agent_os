@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("worktoperVM", {
   getSettings: () => ipcRenderer.invoke("worktoper:vm:settings:get"),
   setSettings: (settings) => ipcRenderer.invoke("worktoper:vm:settings:set", settings),
   chooseSharedDirectory: () => ipcRenderer.invoke("worktoper:vm:settings:choose-directory"),
+  getWindowFullscreen: () => ipcRenderer.invoke("worktoper:window:fullscreen:get"),
+  exitWindowFullscreen: () => ipcRenderer.invoke("worktoper:window:fullscreen:exit"),
   lock: () => ipcRenderer.invoke("worktoper:vm:lock"),
   readClipboardText: () => ipcRenderer.invoke("worktoper:clipboard:read-text"),
   writeClipboardText: (text) => ipcRenderer.invoke("worktoper:clipboard:write-text", text),
@@ -33,5 +35,10 @@ contextBridge.exposeInMainWorld("worktoperVM", {
     const listener = (_event, data) => callback(data)
     ipcRenderer.on("worktoper:vm:terminal", listener)
     return () => ipcRenderer.off("worktoper:vm:terminal", listener)
+  },
+  onWindowFullscreenChange: (callback) => {
+    const listener = (_event, fullscreen) => callback(Boolean(fullscreen))
+    ipcRenderer.on("worktoper:window:fullscreen-changed", listener)
+    return () => ipcRenderer.off("worktoper:window:fullscreen-changed", listener)
   },
 })

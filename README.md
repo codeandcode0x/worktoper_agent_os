@@ -203,6 +203,8 @@ worktoper-open-code
 
 Dock 中的 Chrome/VS Code 图标会向 VM 发送对应启动命令，实际窗口显示在 Linux 桌面窗口里。
 
+在桌面右上角控制菜单的“设置”中选择共享目录，保存后 VM 会自动重启并把宿主机目录挂载到 `/home/worktoper/Shared`。macOS 使用 `mapped-xattr`，Linux 使用 `mapped-file`，Windows 使用 `none`，三个平台都通过 QEMU 9p 提供双向读写；Windows 使用本机 TCP Guest Agent 通道执行客体挂载命令。可通过 `WORKTOPER_SHARED_SECURITY_MODEL` 覆盖共享安全模型。
+
 ## 轻量化策略
 
 - Electron 应用只负责桌面壳、VM 管理、串口日志和应用启动控制。

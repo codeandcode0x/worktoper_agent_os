@@ -3,7 +3,7 @@
 import {
   Activity, AppWindow, Box, ChevronDown, ChevronRight, CircleUserRound, Code2, Command, Cpu,
   FolderOpen, Gauge, Globe2, Grid2X2, HardDrive, Info, LockKeyhole, Maximize2, MemoryStick,
-  Minus, Network, Package, PanelTop, Power, RefreshCw, Search, Server, Settings,
+  Minimize2, Minus, Network, Package, PanelTop, Power, RefreshCw, Search, Server, Settings,
   ShieldCheck, Terminal, Wifi, X,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
@@ -21,6 +21,42 @@ const apps: AppDefinition[] = [
   { id: "chrome", name: "Chrome", subtitle: "Linux GUI 应用", icon: Globe2 },
   { id: "about", name: "关于", subtitle: "系统信息", icon: Info },
 ]
+
+function FullscreenExitControl() {
+  const [fullscreen, setFullscreen] = useState(false)
+  const [visible, setVisible] = useState(false)
+  const visibleRef = useRef(false)
+
+  useEffect(() => desktopLinux.subscribeWindowFullscreen((nextFullscreen) => {
+    setFullscreen(nextFullscreen)
+    if (!nextFullscreen) {
+      visibleRef.current = false
+      setVisible(false)
+    }
+  }), [])
+
+  useEffect(() => {
+    if (!fullscreen) return
+    const setControlVisible = (nextVisible: boolean) => {
+      if (visibleRef.current === nextVisible) return
+      visibleRef.current = nextVisible
+      setVisible(nextVisible)
+    }
+    const onMouseMove = (event: MouseEvent) => {
+      if (event.clientY <= 8) setControlVisible(true)
+      else if (event.clientY > 72) setControlVisible(false)
+    }
+    window.addEventListener("mousemove", onMouseMove, true)
+    return () => window.removeEventListener("mousemove", onMouseMove, true)
+  }, [fullscreen])
+
+  if (!fullscreen) return null
+  return <div className={`fullscreen-exit-control ${visible ? "is-visible" : ""}`}>
+    <button onClick={() => void desktopLinux.exitWindowFullscreen()} aria-label="退出全屏" title="退出全屏">
+      <Minimize2 /><span>退出全屏</span>
+    </button>
+  </div>
+}
 
 const dockApps = apps
 const autoLockIdleMs = 10 * 60 * 1000
@@ -625,6 +661,7 @@ export function WebDesktop() {
   }
   const embeddedReady = runtime.phase === "ready"
   return <main className={`web-os-shell ${embeddedReady ? "linux-desktop-interactive" : ""}`}>
+    <FullscreenExitControl />
     <TopBar openApp={launchApp} runtime={runtime} />
     <section className="desktop" aria-label="WorkToper Agent OS 桌面">
       <EmbeddedDesktopSurface

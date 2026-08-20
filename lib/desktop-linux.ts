@@ -47,6 +47,8 @@ declare global {
       getSettings: () => Promise<VmSettings>
       setSettings: (settings: VmSettings) => Promise<VmSettings>
       chooseSharedDirectory: () => Promise<{ canceled: boolean; path: string }>
+      getWindowFullscreen: () => Promise<{ fullscreen: boolean }>
+      exitWindowFullscreen: () => Promise<{ ok: boolean }>
       lock: () => Promise<{ ok: boolean }>
       readClipboardText: () => Promise<{ text: string }>
       writeClipboardText: (text: string) => Promise<{ ok: boolean }>
@@ -56,6 +58,7 @@ declare global {
       onSerial: (callback: (data: string) => void) => () => void
       onBoot: (callback: (data: string) => void) => () => void
       onTerminal: (callback: (data: string) => void) => () => void
+      onWindowFullscreenChange: (callback: (fullscreen: boolean) => void) => () => void
     }
   }
 }
@@ -209,6 +212,23 @@ class DesktopLinuxRuntime {
   async chooseSharedDirectory() {
     if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
     return window.worktoperVM.chooseSharedDirectory()
+  }
+
+  subscribeWindowFullscreen(listener: (fullscreen: boolean) => void) {
+    if (!window.worktoperVM) {
+      listener(false)
+      return () => undefined
+    }
+    const unsubscribe = window.worktoperVM.onWindowFullscreenChange(listener)
+    void window.worktoperVM.getWindowFullscreen()
+      .then(({ fullscreen }) => listener(Boolean(fullscreen)))
+      .catch(() => listener(false))
+    return unsubscribe
+  }
+
+  async exitWindowFullscreen() {
+    if (!window.worktoperVM) return
+    await window.worktoperVM.exitWindowFullscreen()
   }
 
   async lock() {
