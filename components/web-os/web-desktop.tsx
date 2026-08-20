@@ -187,6 +187,7 @@ type RfbHandle = {
   disconnect: () => void
   focus?: (options?: FocusOptions) => void
   clipboardPasteFrom?: (text: string) => void
+  background?: string
   scaleViewport?: boolean
   resizeSession?: boolean
   clipViewport?: boolean
@@ -262,6 +263,7 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
         if (!hostRef.current || disposed) return
         const rfb = new RFB(hostRef.current, vncWebSocketUrl, { shared: true }) as RfbHandle
         rfb.viewOnly = false
+        rfb.background = "#000000"
         rfb.scaleViewport = true
         rfb.resizeSession = false
         rfb.clipViewport = false

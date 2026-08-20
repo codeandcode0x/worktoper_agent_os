@@ -140,7 +140,7 @@ async function createWindow() {
     aspectRatio: 16 / 9,
     title: "WorkToper Agent OS",
     icon: getWindowIconPath(),
-    backgroundColor: "#111317",
+    backgroundColor: "#000000",
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
