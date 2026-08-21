@@ -3,7 +3,7 @@ import "./globals.css"
 
 export const metadata: Metadata = {
   title: "WorkToper Agent OS - Smart Desktop",
-  description: "通过 Electron 与 QEMU 启动完整 Linux 桌面 VM，提供全屏开机过程、APT 和 Linux 图形应用。",
+  description: "A complete Linux desktop VM powered by Electron and QEMU, with full-screen boot output, APT, and Linux GUI applications.",
   applicationName: "WorkToper Agent OS",
   icons: { icon: "/icon.svg", apple: "/apple-icon.png" },
 }
@@ -18,7 +18,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN" className="bg-background">
+    <html lang="en" className="bg-background">
       <body className="font-sans antialiased">
         {children}
       </body>

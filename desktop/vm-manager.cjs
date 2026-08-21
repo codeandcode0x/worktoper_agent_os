@@ -382,7 +382,7 @@ function formatBytes(bytes) {
 function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     if (redirectCount > 5) {
-      reject(new Error(`VM 镜像下载重定向过多：${url}`))
+      reject(new Error(`Too many VM image download redirects: ${url}`))
       return
     }
     const parsed = new URL(url)
@@ -396,7 +396,7 @@ function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCo
       }
       if (statusCode < 200 || statusCode >= 300) {
         response.resume()
-        reject(new Error(`VM 镜像下载失败：HTTP ${statusCode}`))
+        reject(new Error(`VM image download failed: HTTP ${statusCode}`))
         return
       }
       const total = Number(response.headers["content-length"] || 0)
@@ -414,7 +414,7 @@ function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCo
       output.on("finish", () => output.close(resolve))
       output.on("error", reject)
     })
-    request.setTimeout(30000, () => request.destroy(new Error("VM 镜像下载超时")))
+    request.setTimeout(30000, () => request.destroy(new Error("VM image download timed out")))
     request.on("error", reject)
   })
 }
@@ -424,14 +424,14 @@ function extractVmArchive(app, archive, targetDirectory, onLog) {
   const tar = resolveToolBinary(app, ["tar", "bsdtar"], "WORKTOPER_TAR")
   if (!tar) {
     const searched = toolCandidates(app, ["tar", "bsdtar"], "WORKTOPER_TAR").join(", ")
-    throw new Error(`VM 镜像解压失败：未找到 tar/bsdtar。请将解压工具放入 runtime/tools/${process.platform}/，或安装系统 tar。已查找：${searched || "无"}`)
+    throw new Error(`VM image extraction failed: tar/bsdtar was not found. Add it to runtime/tools/${process.platform}/ or install the system tar utility. Searched: ${searched || "none"}`)
   }
   onLog?.(`[WorkToper] Archive tool: ${tar}`)
   const result = spawnSync(tar, ["-xJf", archive, "-C", targetDirectory], { encoding: "utf8" })
   const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
   if (output) onLog?.(output)
   if (result.status !== 0) {
-    throw new Error(`VM 镜像解压失败，请确认系统支持 tar.xz：${output || result.error?.message || `exit ${result.status}`}`)
+    throw new Error(`VM image extraction failed. Confirm that tar.xz is supported: ${output || result.error?.message || `exit ${result.status}`}`)
   }
 }
 
@@ -471,7 +471,7 @@ function installExtractedVmImage({ extractedDirectory, disk, arch }) {
   const expectedName = path.basename(disk)
   const exactDisk = findExtractedFileInCandidates(candidates, (_file, name) => name === expectedName)
   const fallbackDisk = exactDisk || findExtractedFileInCandidates(candidates, (_file, name) => name.endsWith(".qcow2"))
-  if (!fallbackDisk) throw new Error("VM 镜像压缩包内没有找到 qcow2 文件")
+  if (!fallbackDisk) throw new Error("No qcow2 file was found in the VM image archive")
   fs.mkdirSync(path.dirname(disk), { recursive: true })
   fs.renameSync(fallbackDisk, disk)
 
@@ -842,7 +842,7 @@ class VmManager {
     this.prepareImagePromise = null
     this.state = {
       phase: "idle",
-      detail: "Linux VM 尚未启动",
+      detail: this.message("Linux VM has not started", "Linux VM 尚未启动"),
       bootProgress: 0,
       cpuActive: false,
       diskActive: false,
@@ -854,6 +854,10 @@ class VmManager {
   send(channel, payload) {
     if (!this.webContents || this.webContents.isDestroyed()) return
     this.webContents.send(channel, payload)
+  }
+
+  message(english, chinese) {
+    return this.getSettings?.().language === "zh" ? chinese : english
   }
 
   update(patch) {
@@ -886,7 +890,7 @@ class VmManager {
     const headers = { "X-WorkToper-Download-Key": getVmDownloadKey() }
 
     fs.mkdirSync(userVmDir, { recursive: true })
-    this.update({ phase: "loading", detail: "正在准备 Linux 镜像文件", bootProgress: 2, diskActive: true, network: "connecting" })
+    this.update({ phase: "loading", detail: this.message("Preparing Linux image files", "正在准备 Linux 镜像文件"), bootProgress: 2, diskActive: true, network: "connecting" })
     this.send("worktoper:vm:boot", [
       "\r\n[WorkToper] Linux VM image is missing",
       `[WorkToper] Expected disk: ${disk}`,
@@ -905,7 +909,7 @@ class VmManager {
             const percent = total ? Math.min(100, Math.floor((received / total) * 100)) : 0
             if (percent !== lastPercent && (!total || percent % 3 === 0 || percent === 100)) {
               lastPercent = percent
-              const detail = total ? `正在下载 Linux 镜像 ${percent}% (${formatBytes(received)} / ${formatBytes(total)})` : `正在下载 Linux 镜像 ${formatBytes(received)}`
+              const detail = total ? this.message(`Downloading Linux image ${percent}% (${formatBytes(received)} / ${formatBytes(total)})`, `正在下载 Linux 镜像 ${percent}% (${formatBytes(received)} / ${formatBytes(total)})`) : this.message(`Downloading Linux image ${formatBytes(received)}`, `正在下载 Linux 镜像 ${formatBytes(received)}`)
               this.update({ phase: "loading", detail, bootProgress: Math.max(3, Math.min(34, Math.floor(percent * 0.32))), diskActive: true, network: "connected" })
               this.send("worktoper:vm:boot", `[WorkToper] ${detail}\r\n`)
             }
@@ -915,16 +919,16 @@ class VmManager {
         this.send("worktoper:vm:boot", `[WorkToper] Downloaded VM archive: ${cachedArchive}\r\n`)
       }
 
-      this.update({ phase: "loading", detail: "正在解压 Linux 镜像", bootProgress: 36, diskActive: true, network: "connected" })
+      this.update({ phase: "loading", detail: this.message("Extracting Linux image", "正在解压 Linux 镜像"), bootProgress: 36, diskActive: true, network: "connected" })
       this.send("worktoper:vm:boot", `[WorkToper] Extracting VM archive: ${archive}\r\n`)
       if (fileExists(extractDirectory)) fs.rmSync(extractDirectory, { recursive: true, force: true })
       extractVmArchive(this.app, archive, extractDirectory, (line) => this.send("worktoper:vm:boot", `${line}\r\n`))
 
-      this.update({ phase: "loading", detail: "正在安装 Linux 镜像", bootProgress: 54, diskActive: true, network: "connected" })
+      this.update({ phase: "loading", detail: this.message("Installing Linux image", "正在安装 Linux 镜像"), bootProgress: 54, diskActive: true, network: "connected" })
       installExtractedVmImage({ extractedDirectory: extractDirectory, disk, arch })
-      if (!fileExists(disk)) throw new Error(`Linux VM 镜像安装失败：${disk}`)
+      if (!fileExists(disk)) throw new Error(this.message(`Linux VM image installation failed: ${disk}`, `Linux VM 镜像安装失败：${disk}`))
       this.send("worktoper:vm:boot", `[WorkToper] Installed VM disk: ${disk}\r\n`)
-      this.update({ phase: "loading", detail: "Linux 镜像准备完成", bootProgress: 62, diskActive: true, network: "connected" })
+      this.update({ phase: "loading", detail: this.message("Linux image is ready", "Linux 镜像准备完成"), bootProgress: 62, diskActive: true, network: "connected" })
     } catch (error) {
       try {
         if (fileExists(tempArchive)) fs.rmSync(tempArchive, { force: true })
@@ -945,21 +949,21 @@ class VmManager {
     const disk = resolveVmImage(this.app, arch)
     if (!qemu || !fileExists(qemu)) {
       const searched = qemuCandidates(this.app, arch).join(", ")
-      throw new Error(`应用内置 QEMU ${getQemuName(arch)} 缺失或不可执行，请重新安装完整的 WorkToper Agent OS 安装包。已查找：${searched || "无"}`)
+      throw new Error(this.message(`The bundled QEMU ${getQemuName(arch)} is missing or not executable. Reinstall the complete WorkToper Agent OS package. Searched: ${searched || "none"}`, `应用内置 QEMU ${getQemuName(arch)} 缺失或不可执行，请重新安装完整的 WorkToper Agent OS 安装包。已查找：${searched || "无"}`))
     }
     await this.ensureVmImageAvailable({ arch, disk })
     const seed = resolveSeedImage(this.app, arch)
     const diskUserHint = findDiskUserHint(disk)
     if (diskUserHint) {
-      throw new Error(`VM 镜像正在被另一个 QEMU 进程使用，不能重复启动：${disk}\n${diskUserHint}\n请先退出旧的 WorkToper Agent OS 或停止旧 QEMU 后再启动。`)
+      throw new Error(this.message(`The VM image is already in use by another QEMU process and cannot be started twice: ${disk}\n${diskUserHint}\nQuit the existing WorkToper Agent OS instance or stop the old QEMU process, then try again.`, `VM 镜像正在被另一个 QEMU 进程使用，不能重复启动：${disk}\n${diskUserHint}\n请先退出旧的 WorkToper Agent OS 或停止旧 QEMU 后再启动。`))
     }
 
     const agentRobotPort = Number(process.env.WORKTOPER_AGENT_ROBOT_PORT || DEFAULT_AGENT_ROBOT_PORT)
     if (!Number.isInteger(agentRobotPort) || agentRobotPort < 1 || agentRobotPort > 65535) {
-      throw new Error(`Agent Robot 端口无效：${agentRobotPort}`)
+      throw new Error(this.message(`Invalid Agent Robot port: ${agentRobotPort}`, `Agent Robot 端口无效：${agentRobotPort}`))
     }
     if (!await portAvailable(agentRobotPort)) {
-      throw new Error(`Agent Robot 端口 ${agentRobotPort} 已被占用，请关闭占用该端口的程序后重试。`)
+      throw new Error(this.message(`Agent Robot port ${agentRobotPort} is already in use. Close the application using it and try again.`, `Agent Robot 端口 ${agentRobotPort} 已被占用，请关闭占用该端口的程序后重试。`))
     }
     const [serialPort, sshPort, vncTcpPort, vncWebSocketPort] = await Promise.all([getFreePort(), getFreePort(), getFreePort(), getFreePort()])
     const display = getDisplayConfig({ vncTcpPort, vncWebSocketPort })
@@ -986,7 +990,7 @@ class VmManager {
     this.sharedDirectory = sharedDirectory
     const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobotPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
-    this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
+    this.update({ phase: "loading", detail: this.message("Starting QEMU Linux VM", "正在启动 QEMU Linux VM"), bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
     this.send("worktoper:vm:boot", [
       "\r\n[WorkToper] Preparing Linux VM",
@@ -1022,7 +1026,7 @@ class VmManager {
       const text = chunk.toString("utf8")
       this.send("worktoper:vm:boot", text)
       if (/Failed to get "write" lock|Is another process using the image/i.test(text)) {
-        this.lastErrorDetail = `VM 镜像正在被另一个 QEMU 进程使用：${disk}。请先退出旧的 WorkToper Agent OS 或停止旧 QEMU。`
+        this.lastErrorDetail = this.message(`The VM image is already in use by another QEMU process: ${disk}. Quit the existing WorkToper Agent OS instance or stop the old QEMU process.`, `VM 镜像正在被另一个 QEMU 进程使用：${disk}。请先退出旧的 WorkToper Agent OS 或停止旧 QEMU。`)
         this.update({ phase: "error", detail: this.lastErrorDetail, cpuActive: false, diskActive: false, network: "disconnected" })
         return
       }
@@ -1047,7 +1051,7 @@ class VmManager {
       this.sshPort = 0
       this.agentRobotPort = 0
       this.qgaPort = 0
-      this.update({ phase: code === 0 ? "idle" : "error", detail: this.lastErrorDetail || `Linux VM 已退出: ${signal || code}`, cpuActive: false, diskActive: false, network: "disconnected" })
+      this.update({ phase: code === 0 ? "idle" : "error", detail: this.lastErrorDetail || this.message(`Linux VM exited: ${signal || code}`, `Linux VM 已退出: ${signal || code}`), cpuActive: false, diskActive: false, network: "disconnected" })
     })
 
     this.connection = {
@@ -1072,7 +1076,7 @@ class VmManager {
     this.qgaPort = qgaPort
     this.connectGuestAgent(qgaSocketPath, qgaPort)
     setTimeout(() => {
-      if (this.process && this.state.phase !== "ready") this.update({ phase: "loading", detail: "QEMU 已启动，正在等待 Linux 桌面完成启动", bootProgress: Math.max(this.state.bootProgress, 68), network: "connecting", diskActive: true })
+      if (this.process && this.state.phase !== "ready") this.update({ phase: "loading", detail: this.message("QEMU started. Waiting for the Linux desktop.", "QEMU 已启动，正在等待 Linux 桌面完成启动"), bootProgress: Math.max(this.state.bootProgress, 68), network: "connecting", diskActive: true })
     }, 1200)
     return this.connection
   }
@@ -1092,7 +1096,7 @@ class VmManager {
       agent.execute({ execute: "guest-ping" }).then(() => {
         clearTimeout(timer)
         this.guestAgent = agent
-        this.update({ detail: "QEMU Guest Agent 已连接，正在检测 Linux 桌面", bootProgress: Math.max(this.state.bootProgress, 72), network: "connected" })
+        this.update({ detail: this.message("QEMU Guest Agent connected. Detecting the Linux desktop.", "QEMU Guest Agent 已连接，正在检测 Linux 桌面"), bootProgress: Math.max(this.state.bootProgress, 72), network: "connected" })
         this.waitForDesktopReady()
       }).catch(() => {
         clearTimeout(timer)
@@ -1117,7 +1121,7 @@ class VmManager {
             this.markDesktopReady("lightdm / XFCE / x11vnc readiness check", sharedDirectoryReady)
             return
           }
-          this.update({ phase: "loading", detail: "XFCE 已启动，正在准备内嵌桌面画面", bootProgress: Math.max(this.state.bootProgress, 96), network: "connected" })
+          this.update({ phase: "loading", detail: this.message("XFCE started. Preparing the embedded desktop display.", "XFCE 已启动，正在准备内嵌桌面画面"), bootProgress: Math.max(this.state.bootProgress, 96), network: "connected" })
         } else if (attempts <= 6 || attempts % 8 === 0) {
           if (attempts === 1) await this.repairDesktopRuntime()
           await this.ensureDesktopSession()
@@ -1128,10 +1132,10 @@ class VmManager {
       }
       if (attempts < 240) {
         const progress = Math.min(98, 72 + Math.floor(attempts / 4))
-        this.update({ phase: "loading", detail: "Linux 桌面仍在启动，等待 lightdm / XFCE", bootProgress: Math.max(this.state.bootProgress, progress), network: "connected" })
+        this.update({ phase: "loading", detail: this.message("Linux desktop is still starting. Waiting for lightdm / XFCE.", "Linux 桌面仍在启动，等待 lightdm / XFCE"), bootProgress: Math.max(this.state.bootProgress, progress), network: "connected" })
         setTimeout(check, 1000)
       } else {
-        this.update({ phase: "error", detail: "Linux 桌面启动超时：未检测到 lightdm / XFCE 会话", cpuActive: false, diskActive: false, network: "connected" })
+        this.update({ phase: "error", detail: this.message("Linux desktop startup timed out: no lightdm / XFCE session was detected", "Linux 桌面启动超时：未检测到 lightdm / XFCE 会话"), cpuActive: false, diskActive: false, network: "connected" })
       }
     }
     void check()
@@ -1257,10 +1261,10 @@ class VmManager {
       const notWritable = /Shared directory is mounted but not writable by worktoper user/i.test(text)
       this.update({
         detail: unsupportedKernel
-          ? "当前 VM 镜像内核不支持目录共享，请更新或重新下载 VM 镜像"
+          ? this.message("The current VM image kernel does not support directory sharing. Update or download the VM image again.", "当前 VM 镜像内核不支持目录共享，请更新或重新下载 VM 镜像")
           : notWritable
-            ? "共享目录已挂载，但当前宿主机目录不可写，请检查目录权限"
-            : "共享目录挂载失败，请检查宿主机目录权限和启动日志",
+            ? this.message("The shared directory is mounted, but the host directory is not writable. Check its permissions.", "共享目录已挂载，但当前宿主机目录不可写，请检查目录权限")
+            : this.message("Failed to mount the shared directory. Check host directory permissions and boot logs.", "共享目录挂载失败，请检查宿主机目录权限和启动日志"),
         diskActive: false,
       })
       return false
@@ -1580,7 +1584,7 @@ class VmManager {
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Boot 100% - Linux desktop is ready (${source}). Embedded display is active.\r\n`)
     this.update({
       phase: "ready",
-      detail: sharedDirectoryReady ? "Linux 桌面已就绪" : this.state.detail,
+      detail: sharedDirectoryReady ? this.message("Linux desktop is ready", "Linux 桌面已就绪") : this.state.detail,
       bootProgress: 100,
       cpuActive: false,
       diskActive: false,
@@ -1599,7 +1603,7 @@ class VmManager {
       socket.on("connect", () => {
         this.serial = socket
         this.send("worktoper:vm:boot", "\r\n[WorkToper] Boot console connected. QEMU ttyS0 output is shown here.\r\n")
-        this.update({ detail: "串口已连接，等待 Linux systemd/getty 输出", bootProgress: 40 })
+        this.update({ detail: this.message("Serial port connected. Waiting for Linux systemd/getty output.", "串口已连接，等待 Linux systemd/getty 输出"), bootProgress: 40 })
       })
       socket.on("data", (chunk) => {
         const text = chunk.toString("utf8")
@@ -1608,7 +1612,7 @@ class VmManager {
         } else {
           this.send("worktoper:vm:boot", text)
         }
-        if (/login:/i.test(text)) this.update({ detail: "Linux 登录提示已出现", bootProgress: 82 })
+        if (/login:/i.test(text)) this.update({ detail: this.message("Linux login prompt detected", "Linux 登录提示已出现"), bootProgress: 82 })
         if (/worktoper@|root@|[$#]\s*$/.test(text)) this.markShellReady(text)
       })
       socket.on("error", () => {
@@ -1624,11 +1628,11 @@ class VmManager {
 
   markShellReady(promptText = "") {
     if (this.shellReady) {
-      this.update({ detail: this.state.phase === "ready" ? "Linux 桌面已就绪" : "Linux shell 可交互，等待图形桌面", bootProgress: Math.max(this.state.bootProgress, 84), cpuActive: this.state.phase !== "ready", diskActive: this.state.phase !== "ready", network: "connected" })
+      this.update({ detail: this.state.phase === "ready" ? this.message("Linux desktop is ready", "Linux 桌面已就绪") : this.message("Linux shell is interactive. Waiting for the graphical desktop.", "Linux shell 可交互，等待图形桌面"), bootProgress: Math.max(this.state.bootProgress, 84), cpuActive: this.state.phase !== "ready", diskActive: this.state.phase !== "ready", network: "connected" })
       return
     }
     this.shellReady = true
-    this.update({ phase: this.state.phase === "ready" ? "ready" : "loading", detail: "Linux shell 可交互，等待图形桌面", bootProgress: Math.max(this.state.bootProgress, 84), cpuActive: true, diskActive: true, network: "connected" })
+    this.update({ phase: this.state.phase === "ready" ? "ready" : "loading", detail: this.message("Linux shell is interactive. Waiting for the graphical desktop.", "Linux shell 可交互，等待图形桌面"), bootProgress: Math.max(this.state.bootProgress, 84), cpuActive: true, diskActive: true, network: "connected" })
     this.send("worktoper:vm:terminal", "\r\n[WorkToper] Linux shell ready. Commands run inside the Debian VM.\r\n")
     if (promptText) this.send("worktoper:vm:terminal", promptText)
     const queued = this.pendingShellWrites.splice(0)
@@ -1652,7 +1656,7 @@ class VmManager {
       })
       return { ok: true }
     }
-    if (!this.write(`setsid runuser -u worktoper -- sh -lc '${command.replaceAll("'", "'\\''")}' &\r`)) throw new Error("Linux VM 还不能接收启动命令")
+    if (!this.write(`setsid runuser -u worktoper -- sh -lc '${command.replaceAll("'", "'\\''")}' &\r`)) throw new Error(this.message("The Linux VM cannot receive launch commands yet", "Linux VM 还不能接收启动命令"))
     return { ok: true }
   }
 
@@ -1676,10 +1680,10 @@ class VmManager {
       terminal: `${desktopEnv}xfce4-terminal >/tmp/worktoper-terminal.log 2>&1 || xterm >/tmp/worktoper-terminal.log 2>&1`,
     }
     const command = commands[appId]
-    if (!command) throw new Error(`未知 Linux 应用: ${appId}`)
+    if (!command) throw new Error(this.message(`Unknown Linux application: ${appId}`, `未知 Linux 应用: ${appId}`))
     if (!this.desktopReady) {
       if (!this.pendingLaunches.includes(appId)) this.pendingLaunches.push(appId)
-      this.update({ detail: `${appId} 已加入启动队列，等待 Linux 桌面就绪` })
+      this.update({ detail: this.message(`${appId} was added to the launch queue. Waiting for the Linux desktop.`, `${appId} 已加入启动队列，等待 Linux 桌面就绪`) })
       return { ok: true, queued: true }
     }
     return this.runLaunchCommand(command)
@@ -1744,7 +1748,7 @@ class VmManager {
   }
 
   async lock() {
-    if (!this.guestAgent) throw new Error("Linux VM 还没有就绪，无法锁屏")
+    if (!this.guestAgent) throw new Error(this.message("The Linux VM is not ready and cannot be locked", "Linux VM 还没有就绪，无法锁屏"))
     const command = [
       "set -u",
       "printf 'worktoper:worktoper\\n' | chpasswd || true",
@@ -1753,22 +1757,22 @@ class VmManager {
     const status = await this.guestAgent.guestShell(command, { captureOutput: true })
     const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
     if (text) this.send("worktoper:vm:boot", `\r\n[WorkToper] Lock screen\r\n${text}\r\n`)
-    if (status.exitcode !== 0) throw new Error("Linux 锁屏失败，请确认 XFCE 会话已启动")
+    if (status.exitcode !== 0) throw new Error(this.message("Failed to lock Linux. Confirm that the XFCE session is running.", "Linux 锁屏失败，请确认 XFCE 会话已启动"))
     return { ok: true }
   }
 
   async getAgentRobotStatus() {
     const port = this.agentRobotPort || this.connection?.agentRobotPort || DEFAULT_AGENT_ROBOT_PORT
     const url = `http://127.0.0.1:${port}`
-    if (!this.process || !this.connection) return { ready: false, url, message: "Linux VM 尚未启动" }
+    if (!this.process || !this.connection) return { ready: false, url, message: this.message("Linux VM has not started", "Linux VM 尚未启动") }
     return new Promise((resolve) => {
       const request = http.get(`${url}/api/version`, (response) => {
         response.resume()
         const ready = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 500)
-        resolve({ ready, url, message: ready ? "Agent Robot 已就绪" : `Agent Robot 返回 HTTP ${response.statusCode || "unknown"}` })
+        resolve({ ready, url, message: ready ? this.message("Agent Robot is ready", "Agent Robot 已就绪") : this.message(`Agent Robot returned HTTP ${response.statusCode || "unknown"}`, `Agent Robot 返回 HTTP ${response.statusCode || "unknown"}`) })
       })
       request.setTimeout(1800, () => request.destroy(new Error("timeout")))
-      request.on("error", () => resolve({ ready: false, url, message: "正在等待 Agent Robot 服务启动" }))
+      request.on("error", () => resolve({ ready: false, url, message: this.message("Waiting for the Agent Robot service to start", "正在等待 Agent Robot 服务启动") }))
     })
   }
 
@@ -1799,7 +1803,7 @@ class VmManager {
     if (this.process === processToStop) this.process = null
     this.connection = null
     this.pendingLaunches = []
-    this.update({ phase: "idle", detail: "Linux VM 已停止", bootProgress: 0, cpuActive: false, diskActive: false, network: "disconnected" })
+    this.update({ phase: "idle", detail: this.message("Linux VM stopped", "Linux VM 已停止"), bootProgress: 0, cpuActive: false, diskActive: false, network: "disconnected" })
     return { ok: true }
   }
 }
