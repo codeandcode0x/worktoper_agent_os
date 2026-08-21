@@ -117,7 +117,7 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .prompt-label { flex: none; color: var(--primary); }
 .terminal-form { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .terminal-form input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); }
-.terminal-status { display: flex; align-items: center; gap: 18px; min-height: 26px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; }
+.terminal-status { display: flex; align-items: center; gap: 24px; min-height: 32px; padding: 0 16px; border-top: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; letter-spacing: .025em; }
 .terminal-status span { display: flex; align-items: center; gap: 5px; }
 .terminal-status span:nth-last-child(-n+2) { margin-left: auto; }
 .terminal-status span:last-child { margin-left: -10px; }
@@ -149,8 +149,9 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .desktop-control-actions svg { width: 42px; height: 42px; stroke-width: 1.25; }
 .desktop-settings-panel { display: grid; width: min(720px, 100%); gap: 18px; padding: 26px 30px; border: 0; border-radius: 30px; background: color-mix(in srgb, var(--card) 42%, transparent); box-shadow: 0 24px 80px color-mix(in srgb, #000 34%, transparent); }
 .desktop-settings-panel label { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 18px; color: color-mix(in srgb, var(--foreground) 72%, transparent); font-size: 13px; }
-.desktop-settings-panel input { width: 100%; min-width: 0; height: 44px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--primary) 46%, transparent); border-radius: 0; background: transparent; color: var(--foreground); padding: 0 2px; }
-.desktop-settings-panel input:focus { border-bottom-color: var(--primary); outline: 0; }
+.desktop-settings-panel input, .desktop-settings-panel select { width: 100%; min-width: 0; height: 44px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--primary) 46%, transparent); border-radius: 0; background: transparent; color: var(--foreground); padding: 0 2px; }
+.desktop-settings-panel input:focus, .desktop-settings-panel select:focus { border-bottom-color: var(--primary); outline: 0; }
+.desktop-settings-panel select { cursor: pointer; color-scheme: dark; }
 .desktop-share-field > div { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .desktop-share-field button { display: grid; width: 44px; height: 44px; flex: none; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 78%, transparent); cursor: pointer; }
 .desktop-share-field button:hover { color: var(--primary); }
@@ -160,9 +161,11 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .desktop-settings-panel footer button:hover { color: var(--primary-foreground); text-shadow: 0 0 18px color-mix(in srgb, var(--primary) 56%, transparent); }
 .desktop-settings-panel footer button:disabled { cursor: default; opacity: .55; }
 .app-lock-overlay { position: fixed; inset: 0; z-index: 520; display: block; padding: 28px; background: color-mix(in srgb, #050607 50%, transparent); backdrop-filter: blur(8px); }
-.app-lock-clock { position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--foreground); text-align: center; transform: translate(-50%, -58%); }
-.app-lock-clock strong { font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: clamp(58px, 12vw, 158px); font-weight: 500; line-height: .9; letter-spacing: 0; }
-.app-lock-clock span { color: var(--muted-foreground); font-size: clamp(15px, 2vw, 24px); }
+.app-lock-clock { position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column; align-items: center; gap: 18px; color: var(--foreground); text-align: center; transform: translate(-50%, -60%); filter: drop-shadow(0 22px 46px #0008); }
+.app-lock-clock strong { display: flex; align-items: flex-end; gap: clamp(10px, 1.5vw, 22px); font-family: "Avenir Next", "SF Pro Rounded", "Segoe UI Variable Display", "Segoe UI", var(--font-geist), sans-serif; font-weight: 280; font-variant-numeric: tabular-nums; line-height: .82; letter-spacing: .025em; }
+.app-lock-clock strong > span { color: var(--foreground); font-size: clamp(72px, 13vw, 172px); }
+.app-lock-clock strong > small { margin-bottom: .08em; color: color-mix(in srgb, var(--primary) 84%, var(--foreground)); font-size: clamp(24px, 4vw, 52px); font-weight: 350; letter-spacing: .04em; }
+.app-lock-clock .app-lock-date { color: color-mix(in srgb, var(--muted-foreground) 88%, transparent); font-size: clamp(14px, 1.7vw, 21px); font-weight: 450; letter-spacing: .12em; text-transform: uppercase; }
 .app-lock-primary { position: absolute; left: 50%; top: calc(50% + clamp(104px, 12vw, 164px)); display: grid; width: 74px; height: 74px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--primary) 88%, var(--foreground)); cursor: pointer; transform: translateX(-50%); filter: drop-shadow(0 10px 26px color-mix(in srgb, var(--primary) 24%, transparent)); }
 .app-lock-primary:hover { color: var(--primary-foreground); transform: translateX(-50%) translateY(-2px); }
 .app-lock-primary svg { width: 48px; height: 48px; stroke-width: 1.2; }
@@ -177,13 +180,18 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .boot-screen-fullscreen .boot-screen-head { padding: 0 22px; font-size: 11px; }
 .boot-screen-fullscreen .boot-terminal { padding: 18px 22px; }
 .boot-screen-fullscreen .boot-screen-status { padding: 0 22px; font-size: 10px; }
-.boot-screen-head { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; }
+.boot-screen-head { position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; }
 .boot-screen-head span { display: flex; align-items: center; gap: 7px; color: var(--muted-foreground); }
 .boot-screen-head strong { color: var(--primary); font-weight: 500; }
-.boot-terminal { min-width: 0; min-height: 0; padding: 10px 12px; overflow: hidden; background: #050607; }
+.boot-terminal { min-width: 0; min-height: 0; padding: 16px 18px; overflow: hidden; background: #050607; }
 .boot-terminal .xterm { height: 100%; }
 .boot-terminal .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-.boot-screen-status { display: flex; align-items: center; min-width: 0; padding: 0 12px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; color: var(--muted-foreground); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.boot-command-mask { position: absolute; z-index: 3; inset: 34px 0 30px; display: grid; place-items: center; background: rgba(5, 6, 7, .6); pointer-events: none; }
+.boot-command-mask > span { position: relative; display: block; width: min(420px, 48vw); height: 2px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--foreground) 10%, transparent); box-shadow: 0 0 28px color-mix(in srgb, var(--primary) 12%, transparent); }
+.boot-command-mask > span::after { content: ""; position: absolute; top: 0; bottom: 0; width: 34%; border-radius: inherit; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 88%, white), transparent); box-shadow: 0 0 20px color-mix(in srgb, var(--primary) 72%, transparent); animation: boot-line-scan 1.65s cubic-bezier(.45, 0, .55, 1) infinite; }
+.boot-screen-fullscreen .boot-command-mask { inset: 48px 0 38px; }
+.boot-screen-status { position: relative; z-index: 4; display: flex; align-items: center; min-width: 0; padding: 0 16px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; color: var(--muted-foreground); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; letter-spacing: .035em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@keyframes boot-line-scan { from { transform: translateX(-110%); } to { transform: translateX(395%); } }
 .app-launch-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 34px; text-align: center; }
 .app-launch-panel h3 { margin: 2px 0 0; font-size: 18px; }
 .app-launch-panel p { max-width: 400px; margin: 0; color: var(--muted-foreground); font-size: 10px; line-height: 1.55; }

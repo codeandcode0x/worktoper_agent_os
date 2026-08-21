@@ -33,6 +33,7 @@ export type VmSettings = {
   memoryMb: number
   sharedDirectory: string
   lockPassword: string
+  language: "en" | "zh"
 }
 
 type StateListener = (snapshot: RuntimeSnapshot) => void
@@ -68,7 +69,7 @@ declare global {
 
 const initialSnapshot: RuntimeSnapshot = {
   phase: "idle",
-  detail: "Linux VM 尚未启动",
+  detail: "Linux VM has not started",
   cpuActive: false,
   diskActive: false,
   network: "disconnected",
@@ -145,7 +146,7 @@ class DesktopLinuxRuntime {
     if (this.listenersAttached) return
     this.listenersAttached = true
     if (!window.worktoperVM) {
-      this.update({ ...initialSnapshot, phase: "error", detail: "请使用 WorkToper Agent OS 桌面应用打开；浏览器静态页不能启动 QEMU VM。" })
+      this.update({ ...initialSnapshot, phase: "error", detail: "Open this page in the WorkToper Agent OS desktop app. The static browser page cannot start the QEMU VM." })
       return
     }
     window.worktoperVM.onState((snapshot) => this.update(snapshot))
@@ -167,7 +168,7 @@ class DesktopLinuxRuntime {
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       this.update({ ...initialSnapshot, phase: "error", detail: message })
-      this.pushBoot(`\r\n[WorkToper] 启动失败: ${message}\r\n`)
+      this.pushBoot(`\r\n[WorkToper] Startup failed: ${message}\r\n`)
       this.bootPromise = null
       throw error
     })

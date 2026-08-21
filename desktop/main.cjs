@@ -26,6 +26,7 @@ function defaultVmSettings() {
     memoryMb: 4096,
     sharedDirectory: "",
     lockPassword: "worktoper",
+    language: "en",
   }
 }
 
@@ -36,6 +37,7 @@ function normalizeVmSettings(input = {}) {
   const memoryMb = Number(input.memoryMb ?? defaults.memoryMb)
   const sharedDirectory = typeof input.sharedDirectory === "string" ? input.sharedDirectory.trim() : ""
   const lockPassword = typeof input.lockPassword === "string" && input.lockPassword ? input.lockPassword : defaults.lockPassword
+  const language = input.language === "zh" ? "zh" : "en"
   let validSharedDirectory = ""
   if (sharedDirectory) {
     try {
@@ -47,6 +49,7 @@ function normalizeVmSettings(input = {}) {
     memoryMb: Number.isFinite(memoryMb) ? Math.max(1024, Math.min(32768, Math.round(memoryMb))) : defaults.memoryMb,
     sharedDirectory: validSharedDirectory,
     lockPassword,
+    language,
   }
 }
 
@@ -120,8 +123,12 @@ function installApplicationMenu() {
 }
 
 function getAgentRobotLoadingUrl() {
+  const language = readVmSettings().language
+  const copy = language === "zh"
+    ? { preparing: "正在准备你的智能工作空间，服务就绪后将自动进入。", connecting: "正在连接本地服务" }
+    : { preparing: "Preparing your intelligent workspace. It will open automatically when ready.", connecting: "Connecting to local service" }
   const html = `<!doctype html>
-<html lang="zh-CN">
+<html lang="${language === "zh" ? "zh-CN" : "en"}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -159,9 +166,9 @@ function getAgentRobotLoadingUrl() {
       <div class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M9 13v2M15 13v2"/></svg></div>
       <div class="title"><span class="eyebrow">Smart Desktop · Local Agent</span><h1>Agent Robot</h1></div>
     </div>
-    <p>正在准备你的智能工作空间，服务就绪后将自动进入。</p>
+    <p>${copy.preparing}</p>
     <div class="progress"><span></span></div>
-    <div class="status"><i></i>正在连接本地服务<strong>127.0.0.1:8088</strong></div>
+    <div class="status"><i></i>${copy.connecting}<strong>127.0.0.1:8088</strong></div>
   </section></main>
   <footer>POWERED BY WORKTCLAW</footer>
 </body>
