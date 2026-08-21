@@ -1,7 +1,7 @@
 "use client"
 
 import {
-  Activity, AppWindow, Box, ChevronDown, ChevronRight, CircleUserRound, Code2, Command, Cpu,
+  Activity, AppWindow, Bot, Box, ChevronDown, ChevronRight, CircleUserRound, Code2, Command, Cpu,
   FolderOpen, Gauge, Globe2, Grid2X2, HardDrive, Info, LockKeyhole, Maximize2, MemoryStick,
   Minimize2, Minus, Network, Package, PanelTop, Power, RefreshCw, Search, Server, Settings,
   ShieldCheck, Terminal, Wifi, X,
@@ -536,6 +536,7 @@ function DesktopControlOverlay({ runtime, locked, onLock }: { runtime: RuntimeSn
     {open && <div className="desktop-control-overlay" role="dialog" aria-modal="true" aria-label="系统控制">
       <button className="desktop-control-close" onClick={() => { setOpen(false); setSettingsOpen(false); setMessage("") }} aria-label="关闭系统控制"><X /></button>
       <div className="desktop-control-actions">
+        <button onClick={() => { setOpen(false); setSettingsOpen(false); void desktopLinux.openAgentRobotWindow() }} aria-label="Agent Robot" title="Agent Robot"><Bot /></button>
         <button onClick={() => setSettingsOpen((value) => !value)} aria-label="设置" title="设置"><Settings /></button>
         <button onClick={() => void lockScreen()} aria-label="锁屏" title="锁屏"><LockKeyhole /></button>
         <button onClick={() => void desktopLinux.restartApp()} aria-label="重启" title="重启"><RefreshCw /></button>

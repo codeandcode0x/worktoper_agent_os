@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron")
 contextBridge.exposeInMainWorld("worktoperVM", {
   start: () => ipcRenderer.invoke("worktoper:vm:start"),
   stop: () => ipcRenderer.invoke("worktoper:vm:stop"),
+  openAgentRobotWindow: () => ipcRenderer.invoke("worktoper:vm:agent-robot:open"),
   write: (data) => ipcRenderer.invoke("worktoper:vm:write", data),
   launch: (appId) => ipcRenderer.invoke("worktoper:vm:launch", appId),
   resizeDesktop: (size) => ipcRenderer.invoke("worktoper:vm:resize-desktop", size),

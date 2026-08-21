@@ -29,6 +29,7 @@ const seedIso = path.join(runtimeDir, `seed-${arch}.iso`)
 const seedDir = path.join(runtimeDir, `seed-${arch}`)
 const initializedMarker = path.join(runtimeDir, `worktoper-agent-os-${arch}.initialized`)
 const seedBackgroundDir = path.join(seedDir, "backgrounds")
+const seedWorktclawDir = path.join(seedDir, "worktclaw")
 const defaultBackgroundName = "Alchemy-5.png"
 const forceRebuild = process.argv.includes("--force") || process.argv.includes("--rebuild") || process.env.WORKTOPER_VM_REBUILD === "1"
 const skipInitialize = process.argv.includes("--skip-init") || process.env.WORKTOPER_VM_SKIP_INIT === "1"
@@ -138,6 +139,32 @@ function copyBackgroundsToSeed() {
   return true
 }
 
+function resolveWorktclawPackage() {
+  if (process.env.WORKTOPER_WORKTCLAW_PACKAGE) return path.resolve(process.env.WORKTOPER_WORKTCLAW_PACKAGE)
+  const packageName = "worktclaw-1.1.6b1-linux-x86_64.tar.gz"
+  const candidates = [
+    path.join(root, "assets", "worktclaw", packageName),
+    path.join(root, "..", "workclaw", packageName),
+    path.join(root, "..", "worktclaw", packageName),
+  ]
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ""
+}
+
+function copyWorktclawToSeed() {
+  fs.rmSync(seedWorktclawDir, { recursive: true, force: true })
+  if (arch !== "x64") return false
+  const packageSource = resolveWorktclawPackage()
+  const provisionSource = path.join(root, "scripts", "provision-worktclaw-guest.sh")
+  if (!packageSource) {
+    throw new Error("WorkTClaw x86_64 package is required. Set WORKTOPER_WORKTCLAW_PACKAGE or place worktclaw-1.1.6b1-linux-x86_64.tar.gz in ../workclaw or ../worktclaw.")
+  }
+  if (!fs.existsSync(provisionSource)) throw new Error(`WorkTClaw provision script is missing: ${provisionSource}`)
+  fs.mkdirSync(seedWorktclawDir, { recursive: true })
+  fs.copyFileSync(packageSource, path.join(seedWorktclawDir, "worktclaw-package.tar.gz"))
+  fs.copyFileSync(provisionSource, path.join(seedWorktclawDir, "provision-worktclaw-guest.sh"))
+  return true
+}
+
 function download(url, target) {
   return new Promise((resolve, reject) => {
     const part = `${target}.part`
@@ -188,6 +215,7 @@ function writeSeedFiles() {
   fs.rmSync(seedDir, { recursive: true, force: true })
   fs.mkdirSync(seedDir, { recursive: true })
   copyBackgroundsToSeed()
+  if (!fs.existsSync(initializedMarker)) copyWorktclawToSeed()
   const debianKernelArch = arch === "arm64" ? "arm64" : "amd64"
 
   const powerState = skipInitialize ? "" : `power_state:
@@ -443,6 +471,40 @@ write_files:
       [Service]
       ExecStart=
       ExecStart=-/sbin/agetty --autologin root --keep-baud 115200,38400,9600 %I $TERM
+  - path: /usr/local/sbin/worktoper-install-worktclaw
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      if [ -x /home/worktoper/.qwenpaw/bin/worktclaw ] && [ -f /etc/systemd/system/worktclaw.service ]; then
+        systemctl daemon-reload
+        systemctl enable worktclaw.service
+        systemctl restart worktclaw.service
+        exit 0
+      fi
+      locate_assets() {
+        root=$1
+        [ -f "$root/worktclaw/worktclaw-package.tar.gz" ] || return 1
+        [ -f "$root/worktclaw/provision-worktclaw-guest.sh" ] || return 1
+        bash "$root/worktclaw/provision-worktclaw-guest.sh" "$root/worktclaw/worktclaw-package.tar.gz"
+      }
+      for root in /var/lib/cloud/seed/nocloud /var/lib/cloud/seed/nocloud-net /media/cidata /run/cloud-init; do
+        locate_assets "$root" && exit 0
+      done
+      mount_dir=$(mktemp -d)
+      for device in /dev/disk/by-label/cidata /dev/disk/by-label/CIDATA /dev/sr0 /dev/vdb; do
+        [ -e "$device" ] || continue
+        mount -o ro "$device" "$mount_dir" 2>/dev/null || continue
+        if locate_assets "$mount_dir"; then
+          umount "$mount_dir" 2>/dev/null || true
+          rmdir "$mount_dir" 2>/dev/null || true
+          exit 0
+        fi
+        umount "$mount_dir" 2>/dev/null || true
+      done
+      rmdir "$mount_dir" 2>/dev/null || true
+      echo "WorkTClaw assets were not found on the cloud-init media" >&2
+      exit 1
   - path: /etc/systemd/system/serial-getty@ttyS1.service.d/override.conf
     permissions: "0644"
     content: |
@@ -604,6 +666,7 @@ runcmd:
   - systemctl restart ssh || systemctl restart sshd || true
   - DEBIAN_FRONTEND=noninteractive apt-get install -y linux-image-${debianKernelArch}
   - /usr/local/sbin/worktoper-configure-shared-directory-kernel
+  - if [ "$(uname -m)" = x86_64 ]; then /usr/local/sbin/worktoper-install-worktclaw; fi
   - mkdir -p /var/lib/lightdm/data /var/lib/lightdm/.cache/lightdm /var/lib/lightdm/.config /var/lib/lightdm/.local/share /run/lightdm /var/log/lightdm
   - chown -R lightdm:lightdm /var/lib/lightdm /run/lightdm /var/log/lightdm || true
   - chmod 0755 /var/lib/lightdm /run/lightdm /var/log/lightdm
@@ -635,6 +698,7 @@ runcmd:
   - test -x /usr/sbin/lightdm
   - test -x /usr/bin/x11vnc
   - test -x /usr/sbin/qemu-ga
+  - if [ "$(uname -m)" = x86_64 ]; then test -x /home/worktoper/.qwenpaw/bin/worktclaw && systemctl is-enabled worktclaw.service; fi
   - touch /var/lib/worktoper/desktop-image-ready
   - echo "WORKTOPER_DESKTOP_IMAGE_READY"
 final_message: "WorkToper Agent OS Debian desktop is ready. Login: worktoper / worktoper"
@@ -649,9 +713,14 @@ function createSeedIso() {
   const userData = path.join(seedDir, "user-data")
   const metaData = path.join(seedDir, "meta-data")
   const hasBackgrounds = fs.existsSync(seedBackgroundDir)
-  const graftArgs = hasBackgrounds
-    ? ["-graft-points", `user-data=${userData}`, `meta-data=${metaData}`, `backgrounds=${seedBackgroundDir}`]
-    : [userData, metaData]
+  const hasWorktclaw = fs.existsSync(seedWorktclawDir)
+  const graftArgs = [
+    "-graft-points",
+    `user-data=${userData}`,
+    `meta-data=${metaData}`,
+    ...(hasBackgrounds ? [`backgrounds=${seedBackgroundDir}`] : []),
+    ...(hasWorktclaw ? [`worktclaw=${seedWorktclawDir}`] : []),
+  ]
   const genisoimage = resolveExecutable("genisoimage", { group: "tools", envVar: "WORKTOPER_GENISOIMAGE" })
   if (genisoimage) {
     run(genisoimage, ["-output", seedIso, "-volid", "cidata", "-joliet", "-rock", ...graftArgs])
@@ -672,7 +741,7 @@ function createSeedIso() {
     return
   }
   const cloudLocalds = resolveExecutable("cloud-localds", { group: "tools", envVar: "WORKTOPER_CLOUD_LOCALDS" })
-  if (!hasBackgrounds && cloudLocalds) {
+  if (!hasBackgrounds && !hasWorktclaw && cloudLocalds) {
     run(cloudLocalds, [seedIso, userData, metaData])
     return
   }

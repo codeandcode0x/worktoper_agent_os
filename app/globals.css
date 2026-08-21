@@ -143,7 +143,7 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .desktop-control-overlay { position: fixed; inset: 0; z-index: 420; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 72px 32px 36px; background: color-mix(in srgb, #050607 60%, transparent); backdrop-filter: blur(14px); }
 .desktop-control-close { position: fixed; top: 20px; right: 22px; display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 78%, transparent); cursor: pointer; }
 .desktop-control-close:hover { color: var(--primary); }
-.desktop-control-actions { display: grid; width: min(620px, 100%); grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(24px, 6vw, 56px); align-items: center; justify-items: center; }
+.desktop-control-actions { display: grid; width: min(720px, 100%); grid-template-columns: repeat(5, minmax(0, 1fr)); gap: clamp(20px, 4vw, 44px); align-items: center; justify-items: center; }
 .desktop-control-actions > button { display: grid; width: 82px; height: 82px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 86%, transparent); cursor: pointer; }
 .desktop-control-actions > button:hover { color: var(--primary); transform: translateY(-2px); }
 .desktop-control-actions svg { width: 42px; height: 42px; stroke-width: 1.25; }

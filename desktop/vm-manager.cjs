@@ -9,6 +9,7 @@ const { spawn, spawnSync } = require("node:child_process")
 
 const DEFAULT_VM_DOWNLOAD_KEY = "28112458e7b236b33bf95e8d14999f736a16fac665c9bbffc5ea38fb7574e284"
 const DEFAULT_VM_ARCHIVE_VERSION = "v1.0"
+const DEFAULT_AGENT_ROBOT_PORT = 8088
 
 function fileExists(filePath) {
   try {
@@ -727,10 +728,11 @@ function getSharedSecurityModel() {
   return process.env.WORKTOPER_SHARED_SECURITY_MODEL || (process.platform === "darwin" ? "mapped-xattr" : process.platform === "win32" ? "none" : "mapped-file")
 }
 
-function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs }) {
+function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobotPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs }) {
   const hostForwards = [
     `hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
     `hostfwd=tcp:127.0.0.1:${vncTcpPort}-:5900`,
+    `hostfwd=tcp:127.0.0.1:${agentRobotPort}-:8088`,
   ].join(",")
   const args = [
     ...(qemuDataDirectory ? ["-L", qemuDataDirectory] : []),
@@ -831,6 +833,7 @@ class VmManager {
     this.vncProxyServer = null
     this.vncTcpPort = 0
     this.sshPort = 0
+    this.agentRobotPort = 0
     this.qgaPort = 0
     this.sharedDirectory = ""
     this.pendingDesktopSize = null
@@ -951,10 +954,18 @@ class VmManager {
       throw new Error(`VM 镜像正在被另一个 QEMU 进程使用，不能重复启动：${disk}\n${diskUserHint}\n请先退出旧的 WorkToper Agent OS 或停止旧 QEMU 后再启动。`)
     }
 
+    const agentRobotPort = Number(process.env.WORKTOPER_AGENT_ROBOT_PORT || DEFAULT_AGENT_ROBOT_PORT)
+    if (!Number.isInteger(agentRobotPort) || agentRobotPort < 1 || agentRobotPort > 65535) {
+      throw new Error(`Agent Robot 端口无效：${agentRobotPort}`)
+    }
+    if (!await portAvailable(agentRobotPort)) {
+      throw new Error(`Agent Robot 端口 ${agentRobotPort} 已被占用，请关闭占用该端口的程序后重试。`)
+    }
     const [serialPort, sshPort, vncTcpPort, vncWebSocketPort] = await Promise.all([getFreePort(), getFreePort(), getFreePort(), getFreePort()])
     const display = getDisplayConfig({ vncTcpPort, vncWebSocketPort })
     this.vncTcpPort = vncTcpPort
     this.sshPort = sshPort
+    this.agentRobotPort = agentRobotPort
     this.vncProxyServer?.close()
     this.vncProxyServer = createVncWebSocketProxy({
       listenPort: vncWebSocketPort,
@@ -973,7 +984,7 @@ class VmManager {
     const acceleration = resolveQemuAcceleration(qemu, qemuDataDirectory)
     const cpuModel = process.env.WORKTOPER_QEMU_CPU || (acceleration.name === "tcg" ? "max" : "host")
     this.sharedDirectory = sharedDirectory
-    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
+    const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobotPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
     this.update({ phase: "loading", detail: "正在启动 QEMU Linux VM", bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
@@ -985,6 +996,7 @@ class VmManager {
       `[WorkToper] Display: ${display.mode} (${display.name})`,
       `[WorkToper] VNC TCP: 127.0.0.1:${display.vncTcpPort} -> guest:5900`,
       display.vncWebSocketUrl ? `[WorkToper] VNC websocket: ${display.vncWebSocketUrl}` : "",
+      `[WorkToper] Agent Robot: http://127.0.0.1:${agentRobotPort} -> guest:8088`,
       `[WorkToper] CPU: ${cpus}`,
       `[WorkToper] Memory: ${memoryMb} MB`,
       `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
@@ -1033,6 +1045,7 @@ class VmManager {
       this.vncProxyServer = null
       this.vncTcpPort = 0
       this.sshPort = 0
+      this.agentRobotPort = 0
       this.qgaPort = 0
       this.update({ phase: code === 0 ? "idle" : "error", detail: this.lastErrorDetail || `Linux VM 已退出: ${signal || code}`, cpuActive: false, diskActive: false, network: "disconnected" })
     })
@@ -1043,6 +1056,8 @@ class VmManager {
       seed,
       sshPort,
       serialPort,
+      agentRobotPort,
+      agentRobotUrl: `http://127.0.0.1:${agentRobotPort}`,
       qgaSocketPath,
       displayMode: display.mode,
       displayName: display.name,
@@ -1742,6 +1757,21 @@ class VmManager {
     return { ok: true }
   }
 
+  async getAgentRobotStatus() {
+    const port = this.agentRobotPort || this.connection?.agentRobotPort || DEFAULT_AGENT_ROBOT_PORT
+    const url = `http://127.0.0.1:${port}`
+    if (!this.process || !this.connection) return { ready: false, url, message: "Linux VM 尚未启动" }
+    return new Promise((resolve) => {
+      const request = http.get(`${url}/api/version`, (response) => {
+        response.resume()
+        const ready = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 500)
+        resolve({ ready, url, message: ready ? "Agent Robot 已就绪" : `Agent Robot 返回 HTTP ${response.statusCode || "unknown"}` })
+      })
+      request.setTimeout(1800, () => request.destroy(new Error("timeout")))
+      request.on("error", () => resolve({ ready: false, url, message: "正在等待 Agent Robot 服务启动" }))
+    })
+  }
+
   async stop() {
     const processToStop = this.process
     this.serial?.destroy()
@@ -1751,6 +1781,7 @@ class VmManager {
     this.vncProxyServer?.close()
     this.vncProxyServer = null
     this.vncTcpPort = 0
+    this.agentRobotPort = 0
     this.sharedDirectory = ""
     this.qgaPort = 0
     if (this.resizeTimer) clearTimeout(this.resizeTimer)

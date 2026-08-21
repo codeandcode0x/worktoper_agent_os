@@ -20,6 +20,8 @@ export type VmConnection = {
   seed?: string
   sshPort: number
   serialPort: number
+  agentRobotPort: number
+  agentRobotUrl: string
   qgaSocketPath?: string
   displayMode: "embedded"
   displayName?: string
@@ -41,6 +43,7 @@ declare global {
     worktoperVM?: {
       start: () => Promise<VmConnection>
       stop: () => Promise<{ ok: boolean }>
+      openAgentRobotWindow: () => Promise<{ ok: boolean }>
       write: (data: string) => Promise<{ ok: boolean }>
       launch: (appId: string) => Promise<{ ok: boolean }>
       resizeDesktop: (size: { width: number; height: number }) => Promise<{ ok: boolean }>
@@ -175,6 +178,12 @@ class DesktopLinuxRuntime {
     this.bootPromise = null
     this.connection = null
     await window.worktoperVM?.stop()
+  }
+
+  async openAgentRobotWindow() {
+    await this.boot()
+    if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
+    return window.worktoperVM.openAgentRobotWindow()
   }
 
   async restartVm() {
