@@ -47,12 +47,6 @@ function executableName(command) {
   return /\.(exe|cmd|bat)$/i.test(command) ? command : `${command}.exe`
 }
 
-function shellQuote(value) {
-  const text = String(value)
-  if (/^[A-Za-z0-9_./:=,+-]+$/.test(text)) return text
-  return `'${text.replaceAll("'", "'\\''")}'`
-}
-
 function qemuOptionValue(value) {
   return String(value).replaceAll(",", ",,")
 }
@@ -777,10 +771,6 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobo
   return args
 }
 
-function qemuCommandLine(qemu, args) {
-  return [qemu, ...args].map(shellQuote).join(" ")
-}
-
 function decodeGuestData(value) {
   return value ? Buffer.from(value, "base64").toString("utf8") : ""
 }
@@ -990,30 +980,13 @@ class VmManager {
     this.sharedDirectory = sharedDirectory
     const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobotPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
-    this.update({ phase: "loading", detail: this.message("Starting QEMU Linux VM", "正在启动 QEMU Linux VM"), bootProgress: 8, cpuActive: true, diskActive: true })
+    this.update({ phase: "loading", detail: this.message("Starting the Linux system", "正在启动 Linux 系统"), bootProgress: 8, cpuActive: true, diskActive: true })
     this.lastErrorDetail = ""
-    this.send("worktoper:vm:boot", [
-      "\r\n[WorkToper] Preparing Linux VM",
-      `[WorkToper] QEMU: ${qemu}`,
-      `[WorkToper] Disk: ${disk}`,
-      `[WorkToper] Seed: ${seed || "none"}`,
-      `[WorkToper] Display: ${display.mode} (${display.name})`,
-      `[WorkToper] VNC TCP: 127.0.0.1:${display.vncTcpPort} -> guest:5900`,
-      display.vncWebSocketUrl ? `[WorkToper] VNC websocket: ${display.vncWebSocketUrl}` : "",
-      `[WorkToper] Agent Robot: http://127.0.0.1:${agentRobotPort} -> guest:8088`,
-      `[WorkToper] CPU: ${cpus}`,
-      `[WorkToper] Memory: ${memoryMb} MB`,
-      `[WorkToper] Shared directory: ${sharedDirectory || "none"}`,
-      sharedDirectory ? `[WorkToper] Shared security model: ${getSharedSecurityModel()}` : "",
-      sharedDirectory ? `[WorkToper] Shared guest mount: /home/worktoper/Shared` : "",
-      `[WorkToper] Background directory: ${backgroundDirectory || "none"}`,
-      `[WorkToper] QEMU firmware: ${qemuDataDirectory || "system default"}`,
-      `[WorkToper] QEMU accelerator: ${acceleration.name}`,
-      `[WorkToper] QEMU CPU model: ${cpuModel}`,
-      acceleration.fallbackReason ? `[WorkToper] Hardware acceleration unavailable, using TCG: ${acceleration.fallbackReason}` : "",
-      `[WorkToper] Launch command: ${qemuCommandLine(qemu, args)}`,
-      "",
-    ].filter((line) => line !== "").join("\r\n"))
+    this.send("worktoper:vm:boot", `${[
+      `\r\n[WorkToper] ${this.message("Preparing Smart Desktop", "正在准备 Smart Desktop")}`,
+      `[WorkToper] ${this.message("Loading the system environment", "正在载入系统环境")}`,
+      `[WorkToper] ${this.message("Initializing desktop services", "正在初始化桌面服务")}`,
+    ].join("\r\n")}\r\n`)
     this.process = spawn(qemu, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
     const qemuProcess = this.process
     this.shellReady = false
@@ -1024,7 +997,6 @@ class VmManager {
     qemuProcess.stdout.on("data", (chunk) => this.send("worktoper:vm:boot", chunk.toString("utf8")))
     qemuProcess.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8")
-      this.send("worktoper:vm:boot", text)
       if (/Failed to get "write" lock|Is another process using the image/i.test(text)) {
         this.lastErrorDetail = this.message(`The VM image is already in use by another QEMU process: ${disk}. Quit the existing WorkToper Agent OS instance or stop the old QEMU process.`, `VM 镜像正在被另一个 QEMU 进程使用：${disk}。请先退出旧的 WorkToper Agent OS 或停止旧 QEMU。`)
         this.update({ phase: "error", detail: this.lastErrorDetail, cpuActive: false, diskActive: false, network: "disconnected" })
@@ -1602,7 +1574,7 @@ class VmManager {
       const socket = net.createConnection({ host: "127.0.0.1", port })
       socket.on("connect", () => {
         this.serial = socket
-        this.send("worktoper:vm:boot", "\r\n[WorkToper] Boot console connected. QEMU ttyS0 output is shown here.\r\n")
+        this.send("worktoper:vm:boot", `\r\n[WorkToper] ${this.message("System console connected. Startup output is shown here.", "系统控制台已连接，启动输出会显示在这里。")}\r\n`)
         this.update({ detail: this.message("Serial port connected. Waiting for Linux systemd/getty output.", "串口已连接，等待 Linux systemd/getty 输出"), bootProgress: 40 })
       })
       socket.on("data", (chunk) => {

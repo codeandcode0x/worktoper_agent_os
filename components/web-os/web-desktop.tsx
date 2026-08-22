@@ -41,6 +41,14 @@ function networkLabel(network: RuntimeSnapshot["network"], language: Language) {
   } as const
   return labels[network]?.[language === "zh" ? 1 : 0] || network
 }
+function bootStageLabel(progress: number, error: string, t: (english: string, chinese: string) => string) {
+  if (error) return t("Startup needs attention", "启动过程需要处理")
+  if (progress >= 96) return t("Preparing your desktop", "正在准备桌面")
+  if (progress >= 72) return t("Starting system services", "正在启动系统服务")
+  if (progress >= 40) return t("Loading the operating system", "正在载入操作系统")
+  if (progress >= 10) return t("Preparing the workspace", "正在准备工作空间")
+  return t("Initializing Smart Desktop", "正在初始化 Smart Desktop")
+}
 
 const apps: AppDefinition[] = [
   { id: "store", name: "APT", nameZh: "APT", subtitle: "Debian packages", subtitleZh: "Debian 软件包", icon: Package },
@@ -199,21 +207,37 @@ function BootScreen({ runtime, error, fullscreen = false }: { runtime: RuntimeSn
     void (async () => {
       const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")])
       if (!hostRef.current || disposed) return
-      const terminal = new XTerm({ cursorBlink: false, convertEol: true, disableStdin: true, scrollback: 3000, fontSize: 11, lineHeight: 1.48, letterSpacing: .25, fontFamily: '"Geist Mono", "SFMono-Regular", Consolas, monospace', theme: { background: "#050607", foreground: "#d9ded8", cursor: "#d4a854", selectionBackground: "#d4a85455", green: "#7fc29b", yellow: "#d4a854", blue: "#72a7c7", red: "#d87979" } })
+      const terminal = new XTerm({ cursorBlink: false, convertEol: true, disableStdin: true, scrollback: 3000, fontSize: 11, lineHeight: 1.48, letterSpacing: .25, fontFamily: '"Geist Mono", "SFMono-Regular", Consolas, monospace', theme: { background: "#050607", foreground: "#ffffff", cursor: "#ffffff", selectionBackground: "#ffffff33", green: "#ffffff", yellow: "#ffffff", blue: "#ffffff", red: "#ffffff", brightGreen: "#ffffff", brightYellow: "#ffffff", brightBlue: "#ffffff", brightRed: "#ffffff" } })
       const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(hostRef.current); fit.fit()
-      terminal.writeln("\x1b[38;5;214mWorkToper Agent OS\x1b[0m")
-      terminal.writeln(language === "zh" ? "QEMU BIOS、Linux kernel、systemd 启动日志会显示在这里。" : "QEMU BIOS, Linux kernel, and systemd boot logs appear here.")
+      terminal.writeln("\x1b[37mWorkToper Agent OS · Smart Desktop\x1b[0m")
+      terminal.writeln(language === "zh" ? "系统启动日志会显示在这里。" : "System startup logs appear here.")
       const unsubscribe = desktopLinux.subscribeBoot((data) => terminal.write(data, () => terminal.scrollToBottom()))
       const observer = new ResizeObserver(() => { try { fit.fit() } catch {} }); observer.observe(hostRef.current)
       cleanup = () => { observer.disconnect(); unsubscribe(); terminal.dispose() }
     })()
     return () => { disposed = true; cleanup() }
   }, [language])
+  const progress = Math.max(0, Math.min(100, runtime.bootProgress || 0))
+  const progressStyle = { "--boot-width": `${progress}%` } as React.CSSProperties
   return <div className={`boot-screen ${fullscreen ? "boot-screen-fullscreen" : ""}`}>
-    <div className="boot-screen-head"><span><span className="status-dot" />{runtime.phase === "error" ? t("BOOT ERROR", "启动错误") : runtime.phase === "ready" ? t("DESKTOP READY", "桌面已就绪") : t("BOOTING", "正在启动")}</span><strong>{runtime.bootProgress || 0}%</strong></div>
+    <div className="boot-screen-head">
+      <div className="boot-head-copy">
+        <span className="boot-head-kicker"><span className={`status-dot ${runtime.phase === "error" ? "status-error" : ""}`} />SMART DESKTOP</span>
+        <strong>{runtime.phase === "error" ? t("Startup interrupted", "启动已中断") : runtime.phase === "ready" ? t("Desktop ready", "桌面已就绪") : t("Starting your workspace", "正在启动工作空间")}</strong>
+        <small>{bootStageLabel(progress, error, t)}</small>
+      </div>
+      <div className="boot-progress-top" aria-label={t("Startup activity", "启动活动")}>
+        <span className="boot-progress-scan"><i /></span>
+        <small>{runtime.phase === "error" ? t("Attention", "注意") : t("Live", "运行中")}</small>
+      </div>
+    </div>
     <div className="boot-terminal" ref={hostRef} />
-    <div className="boot-command-mask" aria-hidden="true"><span /></div>
-    <div className="boot-screen-status">{error || runtime.detail}</div>
+    <div className="boot-command-mask" role="progressbar" aria-label={t("Startup progress", "启动进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+      <div className="boot-center-progress" style={progressStyle}>
+        <div className="boot-center-ring"><div><strong>{progress}</strong><small>%</small></div></div>
+        <span>{runtime.phase === "error" ? t("Startup interrupted", "启动已中断") : runtime.phase === "ready" ? t("Desktop ready", "桌面已就绪") : t("Starting", "正在启动")}</span>
+      </div>
+    </div>
   </div>
 }
 

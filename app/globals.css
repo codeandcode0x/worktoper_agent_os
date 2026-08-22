@@ -175,23 +175,36 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .app-lock-form button { width: auto; height: 36px; padding: 0 18px; border: 0; border-radius: 999px; background: transparent; color: var(--primary); cursor: pointer; font-weight: 700; }
 .app-lock-form button:hover { color: var(--primary-foreground); text-shadow: 0 0 18px color-mix(in srgb, var(--primary) 60%, transparent); }
 .app-lock-form span { min-height: 16px; color: var(--muted-foreground); font-size: 12px; }
-.boot-screen { position: absolute; inset: 0; z-index: 3; display: grid; grid-template-rows: 34px minmax(0, 1fr) 30px; background: #050607; color: var(--foreground); }
-.boot-screen-fullscreen { position: fixed; z-index: 300; grid-template-rows: 48px minmax(0, 1fr) 38px; }
-.boot-screen-fullscreen .boot-screen-head { padding: 0 22px; font-size: 11px; }
+.boot-screen { position: absolute; inset: 0; z-index: 3; display: grid; grid-template-rows: 48px minmax(0, 1fr); background: #050607; color: var(--foreground); }
+.boot-screen-fullscreen { position: fixed; z-index: 300; grid-template-rows: 58px minmax(0, 1fr); }
+.boot-screen-fullscreen .boot-screen-head { padding: 0 24px; }
 .boot-screen-fullscreen .boot-terminal { padding: 18px 22px; }
-.boot-screen-fullscreen .boot-screen-status { padding: 0 22px; font-size: 10px; }
-.boot-screen-head { position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; }
-.boot-screen-head span { display: flex; align-items: center; gap: 7px; color: var(--muted-foreground); }
-.boot-screen-head strong { color: var(--primary); font-weight: 500; }
+.boot-screen-head { position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 0 18px; border-bottom: 1px solid rgba(255, 255, 255, .14); background: linear-gradient(110deg, #0d1014 0%, #090b0e 72%, #0d1118 100%); box-shadow: 0 12px 30px #0006; font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; }
+.boot-head-copy { display: flex; min-width: 0; align-items: center; gap: 14px; white-space: nowrap; }
+.boot-head-kicker { display: flex; align-items: center; gap: 8px; color: color-mix(in srgb, var(--primary) 82%, white); font-size: 8px; font-weight: 700; letter-spacing: .18em; }
+.boot-head-copy > strong { overflow: hidden; color: #fff; font-family: var(--font-geist), var(--font-noto-sc), sans-serif; font-size: 12px; font-weight: 560; letter-spacing: .01em; text-overflow: ellipsis; }
+.boot-head-copy > small { display: flex; overflow: hidden; align-items: center; gap: 14px; color: color-mix(in srgb, #fff 46%, transparent); font-size: 8px; letter-spacing: .025em; text-overflow: ellipsis; }
+.boot-head-copy > small::before { content: ""; width: 1px; height: 12px; flex: none; background: color-mix(in srgb, #fff 16%, transparent); }
+.boot-progress-top { display: flex; min-width: 128px; flex: none; align-items: center; justify-content: flex-end; gap: 9px; }
+.boot-progress-top small { color: color-mix(in srgb, #fff 42%, transparent); font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.boot-progress-scan { position: relative; display: block; width: 82px; height: 2px; overflow: hidden; border-radius: 999px; background: #272d35; }
+.boot-progress-scan i { position: absolute; inset: 0 auto 0 -34%; width: 34%; border-radius: inherit; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 80%, var(--primary)), transparent); animation: boot-line-scan 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
 .boot-terminal { min-width: 0; min-height: 0; padding: 16px 18px; overflow: hidden; background: #050607; }
 .boot-terminal .xterm { height: 100%; }
+.boot-terminal .xterm-screen { color: #fff; }
 .boot-terminal .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-.boot-command-mask { position: absolute; z-index: 3; inset: 34px 0 30px; display: grid; place-items: center; background: rgba(5, 6, 7, .6); pointer-events: none; }
-.boot-command-mask > span { position: relative; display: block; width: min(420px, 48vw); height: 2px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--foreground) 10%, transparent); box-shadow: 0 0 28px color-mix(in srgb, var(--primary) 12%, transparent); }
-.boot-command-mask > span::after { content: ""; position: absolute; top: 0; bottom: 0; width: 34%; border-radius: inherit; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 88%, white), transparent); box-shadow: 0 0 20px color-mix(in srgb, var(--primary) 72%, transparent); animation: boot-line-scan 1.65s cubic-bezier(.45, 0, .55, 1) infinite; }
-.boot-screen-fullscreen .boot-command-mask { inset: 48px 0 38px; }
-.boot-screen-status { position: relative; z-index: 4; display: flex; align-items: center; min-width: 0; padding: 0 16px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); background: #0b0d10; color: var(--muted-foreground); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 9px; letter-spacing: .035em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.boot-command-mask { position: absolute; z-index: 3; inset: 48px 0 0; display: grid; place-items: center; background: rgba(5, 6, 7, .44); backdrop-filter: blur(3px); filter: none; pointer-events: none; }
+.boot-center-progress { position: relative; z-index: 2; display: grid; justify-items: center; gap: 12px; color: color-mix(in srgb, #fff 72%, transparent); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; transition: --boot-width .45s cubic-bezier(.4, 0, .2, 1); }
+.boot-center-progress > span { color: color-mix(in srgb, #fff 52%, transparent); font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
+.boot-center-ring { position: relative; display: grid; width: 116px; height: 116px; place-items: center; border-radius: 50%; background: conic-gradient(from -35deg, color-mix(in srgb, var(--primary) 58%, #c7ced5) var(--boot-width), #3a4048 var(--boot-width) 100%); box-shadow: 0 0 0 1px #ffffff08, 0 12px 38px #0007; }
+.boot-center-ring::before { content: ""; position: absolute; inset: 8px; border: 1px solid #ffffff12; border-radius: 50%; }
+.boot-center-ring::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; background: repeating-conic-gradient(from -1deg, #ffffff1c 0 1deg, transparent 1deg 15deg); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
+.boot-center-ring > div { display: flex; width: 100px; height: 100px; align-items: baseline; justify-content: center; padding-top: 37px; border-radius: 50%; background: #080a0d; box-shadow: inset 0 0 24px #0009; }
+.boot-center-ring strong { color: #fff; font-size: 27px; font-weight: 520; line-height: 1; }
+.boot-center-ring small { margin-left: 2px; color: color-mix(in srgb, #fff 48%, transparent); font-size: 10px; }
+.boot-screen-fullscreen .boot-command-mask { inset: 58px 0 0; }
 @keyframes boot-line-scan { from { transform: translateX(-110%); } to { transform: translateX(395%); } }
+@property --boot-width { syntax: "<percentage>"; inherits: true; initial-value: 0%; }
 .app-launch-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 34px; text-align: center; }
 .app-launch-panel h3 { margin: 2px 0 0; font-size: 18px; }
 .app-launch-panel p { max-width: 400px; margin: 0; color: var(--muted-foreground); font-size: 10px; line-height: 1.55; }
