@@ -226,10 +226,6 @@ function BootScreen({ runtime, error, fullscreen = false }: { runtime: RuntimeSn
         <strong>{runtime.phase === "error" ? t("Startup interrupted", "启动已中断") : runtime.phase === "ready" ? t("Desktop ready", "桌面已就绪") : t("Starting your workspace", "正在启动工作空间")}</strong>
         <small>{bootStageLabel(progress, error, t)}</small>
       </div>
-      <div className="boot-progress-top" aria-label={t("Startup activity", "启动活动")}>
-        <span className="boot-progress-scan"><i /></span>
-        <small>{runtime.phase === "error" ? t("Attention", "注意") : t("Live", "运行中")}</small>
-      </div>
     </div>
     <div className="boot-terminal" ref={hostRef} />
     <div className="boot-command-mask" role="progressbar" aria-label={t("Startup progress", "启动进度")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
@@ -523,6 +519,7 @@ function DesktopControlOverlay({ runtime, locked, onLock, onLanguageChange }: { 
   const { t } = useCopy()
   const [open, setOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
   const [settings, setSettings] = useState<VmSettings>(fallbackSettings)
   const [savedSettings, setSavedSettings] = useState<VmSettings>(fallbackSettings)
   const [saving, setSaving] = useState(false)
@@ -542,6 +539,7 @@ function DesktopControlOverlay({ runtime, locked, onLock, onLanguageChange }: { 
     if (!locked) return
     setOpen(false)
     setSettingsOpen(false)
+    setAboutOpen(false)
     setMessage("")
   }, [locked])
   useEffect(() => {
@@ -550,6 +548,7 @@ function DesktopControlOverlay({ runtime, locked, onLock, onLanguageChange }: { 
       if (event.key !== "Escape") return
       setOpen(false)
       setSettingsOpen(false)
+      setAboutOpen(false)
       setMessage("")
     }
     window.addEventListener("keydown", onKeyDown, true)
@@ -592,6 +591,7 @@ function DesktopControlOverlay({ runtime, locked, onLock, onLanguageChange }: { 
   const lockScreen = async () => {
     setOpen(false)
     setSettingsOpen(false)
+    setAboutOpen(false)
     onLock(settings.lockPassword || fallbackSettings.lockPassword)
   }
 
@@ -600,14 +600,21 @@ function DesktopControlOverlay({ runtime, locked, onLock, onLanguageChange }: { 
       <ChevronDown />
     </button>
     {open && <div className="desktop-control-overlay" role="dialog" aria-modal="true" aria-label={t("System controls", "系统控制")}>
-      <button className="desktop-control-close" onClick={() => { setOpen(false); setSettingsOpen(false); setMessage("") }} aria-label={t("Close system controls", "关闭系统控制")}><X /></button>
+      <button className="desktop-control-close" onClick={() => { setOpen(false); setSettingsOpen(false); setAboutOpen(false); setMessage("") }} aria-label={t("Close system controls", "关闭系统控制")}><X /></button>
       <div className="desktop-control-actions">
+        <button onClick={() => { setAboutOpen((value) => !value); setSettingsOpen(false); setMessage("") }} aria-label={t("About", "关于")} title={t("About", "关于")}><Info /></button>
         <button onClick={() => { setOpen(false); setSettingsOpen(false); void desktopLinux.openAgentRobotWindow() }} aria-label="Agent Robot" title="Agent Robot"><Bot /></button>
-        <button onClick={() => setSettingsOpen((value) => !value)} aria-label={t("Settings", "设置")} title={t("Settings", "设置")}><Settings /></button>
+        <button onClick={() => { setSettingsOpen((value) => !value); setAboutOpen(false); setMessage("") }} aria-label={t("Settings", "设置")} title={t("Settings", "设置")}><Settings /></button>
         <button onClick={() => void lockScreen()} aria-label={t("Lock", "锁屏")} title={t("Lock", "锁屏")}><LockKeyhole /></button>
         <button onClick={() => void desktopLinux.restartApp()} aria-label={t("Restart", "重启")} title={t("Restart", "重启")}><RefreshCw /></button>
         <button onClick={() => void desktopLinux.closeApp()} aria-label={t("Shut down", "关闭")} title={t("Shut down", "关闭")}><Power /></button>
       </div>
+      {aboutOpen && <section className="desktop-settings-panel desktop-about-panel" aria-label={t("About WorkToper Agent OS", "关于 WorkToper Agent OS")}>
+        <span className="desktop-about-kicker">WORKTOPER AGENT OS</span>
+        <h2>{t("A Thoughtfully Designed Open-Source Desktop OS", "开源桌面系统")}</h2>
+        <p>{t("WorkToper Agent OS is an open-source project built on Debian, with a non-profit mission. It is designed to support learning, productivity, and a wide range of everyday use cases.", "WorkToper Agent OS 是一套基于 Debian 的开源桌面操作系统，以非营利为宗旨，服务于学习、工作与各类日常应用场景。")}</p>
+        <p>{t("For questions or suggestions, please reach out to us at", "欢迎通过")} <a href="mailto:helper@worktoper.com">helper@worktoper.com</a>{t(".", "提出您的宝贵意见或建议。")}</p>
+      </section>}
       {settingsOpen && <section className="desktop-settings-panel" aria-label={t("Linux desktop runtime settings", "Linux 桌面运行设置")}>
         <label><span>{t("Language", "语言")}</span><select value={settings.language} onChange={(event) => { const language = event.target.value === "zh" ? "zh" : "en"; updateSettings({ language }); onLanguageChange(language) }}><option value="en">English</option><option value="zh">中文</option></select></label>
         <label><span>CPU</span><input type="number" min="1" max="32" value={settings.cpus} onChange={(event) => updateSettings({ cpus: Number(event.target.value) })} /></label>
@@ -651,7 +658,7 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
     window.setTimeout(() => inputRef.current?.focus(), 50)
   }
   return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label={t("Lock screen", "锁屏")}>
-    <div className="app-lock-clock" aria-label={t("Current time", "当前时间")}><strong><span>{hourMinuteText}</span><small>{secondText}</small></strong><span className="app-lock-date">{dateText}</span></div>
+    <div className="app-lock-clock" aria-label={t("Current time", "当前时间")}><strong><span>{hourMinuteText}</span><small>:{secondText}</small></strong><span className="app-lock-date">{dateText}</span></div>
     {!formVisible && <button className="app-lock-primary" onClick={showForm} aria-label={t("Unlock", "解锁")} title={t("Unlock", "解锁")}><LockKeyhole /></button>}
     {formVisible && <form className="app-lock-form" onSubmit={(event) => { event.preventDefault(); unlock() }}>
       <input ref={inputRef} type="password" value={value} onChange={(event) => { setValue(event.target.value); setMessage("") }} placeholder={t("Enter password", "输入密码")} />

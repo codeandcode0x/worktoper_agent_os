@@ -143,7 +143,7 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .desktop-control-overlay { position: fixed; inset: 0; z-index: 420; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 72px 32px 36px; background: color-mix(in srgb, #050607 60%, transparent); backdrop-filter: blur(14px); }
 .desktop-control-close { position: fixed; top: 20px; right: 22px; display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 78%, transparent); cursor: pointer; }
 .desktop-control-close:hover { color: var(--primary); }
-.desktop-control-actions { display: grid; width: min(720px, 100%); grid-template-columns: repeat(5, minmax(0, 1fr)); gap: clamp(20px, 4vw, 44px); align-items: center; justify-items: center; }
+.desktop-control-actions { display: grid; width: min(860px, 100%); grid-template-columns: repeat(6, minmax(0, 1fr)); gap: clamp(16px, 3.2vw, 34px); align-items: center; justify-items: center; }
 .desktop-control-actions > button { display: grid; width: 82px; height: 82px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--foreground) 86%, transparent); cursor: pointer; }
 .desktop-control-actions > button:hover { color: var(--primary); transform: translateY(-2px); }
 .desktop-control-actions svg { width: 42px; height: 42px; stroke-width: 1.25; }
@@ -160,11 +160,17 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .desktop-settings-panel footer button { min-width: 86px; height: 42px; border: 0; border-radius: 999px; background: transparent; color: var(--primary); cursor: pointer; font-weight: 700; }
 .desktop-settings-panel footer button:hover { color: var(--primary-foreground); text-shadow: 0 0 18px color-mix(in srgb, var(--primary) 56%, transparent); }
 .desktop-settings-panel footer button:disabled { cursor: default; opacity: .55; }
+.desktop-about-panel { gap: 9px; }
+.desktop-about-kicker { color: var(--primary); font-family: var(--font-geist-mono), var(--font-noto-sc), monospace; font-size: 10px; letter-spacing: .16em; }
+.desktop-about-panel h2 { margin: 0; color: var(--foreground); font-size: clamp(22px, 3vw, 30px); font-weight: 540; letter-spacing: -.025em; }
+.desktop-about-panel p { margin: 0; color: color-mix(in srgb, var(--foreground) 68%, transparent); font-size: 13px; line-height: 1.7; }
+.desktop-about-panel a { color: var(--primary); text-decoration: none; }
+.desktop-about-panel a:hover { text-decoration: underline; }
 .app-lock-overlay { position: fixed; inset: 0; z-index: 520; display: block; padding: 28px; background: color-mix(in srgb, #050607 50%, transparent); backdrop-filter: blur(8px); }
 .app-lock-clock { position: absolute; left: 50%; top: 50%; display: flex; flex-direction: column; align-items: center; gap: 18px; color: var(--foreground); text-align: center; transform: translate(-50%, -60%); filter: drop-shadow(0 22px 46px #0008); }
-.app-lock-clock strong { display: flex; align-items: flex-end; gap: clamp(10px, 1.5vw, 22px); font-family: "Avenir Next", "SF Pro Rounded", "Segoe UI Variable Display", "Segoe UI", var(--font-geist), sans-serif; font-weight: 280; font-variant-numeric: tabular-nums; line-height: .82; letter-spacing: .025em; }
+.app-lock-clock strong { display: flex; align-items: flex-end; gap: 0; font-family: "Avenir Next", "SF Pro Rounded", "Segoe UI Variable Display", "Segoe UI", var(--font-geist), sans-serif; font-weight: 280; font-variant-numeric: tabular-nums; line-height: .82; letter-spacing: .025em; }
 .app-lock-clock strong > span { color: var(--foreground); font-size: clamp(72px, 13vw, 172px); }
-.app-lock-clock strong > small { margin-bottom: .08em; color: color-mix(in srgb, var(--primary) 84%, var(--foreground)); font-size: clamp(24px, 4vw, 52px); font-weight: 350; letter-spacing: .04em; }
+.app-lock-clock strong > small { margin-bottom: 0; color: var(--foreground); font-size: clamp(72px, 13vw, 172px); font-weight: 280; letter-spacing: .025em; }
 .app-lock-clock .app-lock-date { color: color-mix(in srgb, var(--muted-foreground) 88%, transparent); font-size: clamp(14px, 1.7vw, 21px); font-weight: 450; letter-spacing: .12em; text-transform: uppercase; }
 .app-lock-primary { position: absolute; left: 50%; top: calc(50% + clamp(104px, 12vw, 164px)); display: grid; width: 74px; height: 74px; place-items: center; border: 0; border-radius: 50%; background: transparent; color: color-mix(in srgb, var(--primary) 88%, var(--foreground)); cursor: pointer; transform: translateX(-50%); filter: drop-shadow(0 10px 26px color-mix(in srgb, var(--primary) 24%, transparent)); }
 .app-lock-primary:hover { color: var(--primary-foreground); transform: translateX(-50%) translateY(-2px); }
@@ -185,10 +191,6 @@ svg { width: 1em; height: 1em; stroke-width: 1.7; }
 .boot-head-copy > strong { overflow: hidden; color: #fff; font-family: var(--font-geist), var(--font-noto-sc), sans-serif; font-size: 12px; font-weight: 560; letter-spacing: .01em; text-overflow: ellipsis; }
 .boot-head-copy > small { display: flex; overflow: hidden; align-items: center; gap: 14px; color: color-mix(in srgb, #fff 46%, transparent); font-size: 8px; letter-spacing: .025em; text-overflow: ellipsis; }
 .boot-head-copy > small::before { content: ""; width: 1px; height: 12px; flex: none; background: color-mix(in srgb, #fff 16%, transparent); }
-.boot-progress-top { display: flex; min-width: 128px; flex: none; align-items: center; justify-content: flex-end; gap: 9px; }
-.boot-progress-top small { color: color-mix(in srgb, #fff 42%, transparent); font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
-.boot-progress-scan { position: relative; display: block; width: 82px; height: 2px; overflow: hidden; border-radius: 999px; background: #272d35; }
-.boot-progress-scan i { position: absolute; inset: 0 auto 0 -34%; width: 34%; border-radius: inherit; background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 80%, var(--primary)), transparent); animation: boot-line-scan 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
 .boot-terminal { min-width: 0; min-height: 0; padding: 16px 18px; overflow: hidden; background: #050607; }
 .boot-terminal .xterm { height: 100%; }
 .boot-terminal .xterm-screen { color: #fff; }

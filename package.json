@@ -66,23 +66,20 @@
       "output": "release"
     },
     "files": [
-      "app/**/*",
-      "components/**/*",
+      "!node_modules/**/*",
       "desktop/**/*",
-      "bg/**/*",
-      "images/bg/**/*",
-      "images/icons/**/*",
-      "lib/**/*",
+      "images/icons/icon.png",
       "out/**/*",
-      "public/**/*",
-      "!runtime/**/*",
-      "scripts/**/*",
-      "types/**/*",
-      "package.json",
-      "next.config.mjs",
-      "README.md"
+      "package.json"
     ],
     "icon": "images/icons/icon.png",
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US",
+      "zh-CN",
+      "zh_CN"
+    ],
+    "npmRebuild": false,
     "extraResources": [
       {
         "from": "images/bg",
