@@ -1,236 +1,281 @@
 # WorkToper Agent OS
 
-WorkToper Agent OS 是一个桌面应用形态的 Linux OS。应用本身使用 Electron 打开，内部由 QEMU 启动一个完整 Linux VM，并在同一个应用窗口内提供可交互 Linux 桌面。开机画面显示真实的 BIOS、Linux kernel、systemd/getty 启动日志，终端窗口进入可交互 Linux shell。
+**WorkToper Agent OS** 是一个将 Linux 桌面、开发工具和智能助手整合到单一应用窗口中的开源桌面项目。它在 Electron 应用中运行隔离的 Debian Linux 环境，让用户可以像使用普通桌面系统一样运行终端、浏览器、编辑器和自动化工具。
 
-当前架构不再把 VS Code/Chrome 做成 Web 外链，也不再使用 v86/Buildroot。Linux 命令、APT 安装、GUI 应用都运行在 VM 内。
+[English](#english) · [MIT License](LICENSE)
 
-```text
-Electron desktop app
-  -> QEMU VM manager
-  -> Debian qcow2 disk
-  -> APT + systemd + XFCE
-  -> QEMU embedded desktop display
-  -> QEMU serial ttyS0 -> xterm.js boot console
-```
+![WorkToper Agent OS 智能桌面](https://www.worktoper.com/static/images/worktoper-agent-os.png)
 
-## 能力
 
-- Windows、macOS、Linux 都以桌面应用方式打开。
-- 启动真实 Linux VM，不依赖本机 Ubuntu、Docker、SSH 服务端或浏览器 wasm Linux。
-- Linux 桌面在应用窗口内显示，可直接交互并运行图形应用。
-- Linux 桌面开机画面显示完整启动日志；终端窗口只显示可交互 Linux shell 和用户命令输出。
-- VM 内使用 Debian `apt-get` 安装软件。
-- 默认开源组合建议为 Chromium + VSCodium；启动命令也会优先尝试 `google-chrome` / `code`，如果用户在 VM 内按各自许可安装了官方包，会直接打开官方应用。
+### 项目背景
 
-## 依赖
+开发者经常需要在宿主机、容器、远程服务器和多个桌面工具之间切换。这样的工作流虽然灵活，但也带来了环境不一致、工具难以复现、窗口分散以及 Linux 图形应用使用门槛较高等问题。
 
-### 运行依赖
+WorkToper Agent OS 希望提供一个更直接的工作空间：应用负责窗口和交互，Linux VM 负责真实的系统环境，智能助手和开发工具在同一个可视化桌面中协同工作。用户无需把宿主机改造成 Linux，也不必依赖浏览器中的 wasm 模拟器，就可以获得一个可持久化、可交互的 Linux 桌面。
 
-正式发布包需要提供一个可运行的 QEMU 环境。应用启动时会按下面顺序查找：
+### 智能桌面
 
-1. 环境变量指定的二进制。
-2. 应用随包二进制：`runtime/qemu/...`、`runtime/tools/...`。
-3. 用户系统已经安装并在常见目录或 `PATH` 中的二进制。
+项目的核心体验是一个可嵌入应用窗口的 Linux 智能桌面：
 
-如果第 2 项随包齐全，普通用户不需要额外安装 QEMU 或解压工具。
+- 启动时展示真实的 Linux 启动日志和进度。
+- 在同一个窗口中运行 XFCE 图形桌面、终端和 GUI 应用。
+- 支持宿主机与 Linux 桌面之间的文字剪贴板同步。
+- 支持共享目录，将宿主机文件挂载到 Linux 工作空间。
+- 可通过 Agent Robot 和桌面内的快捷入口启动自动化任务与开发工具。
 
-仓库当前已经包含三个平台的 x86_64 运行时及其完整依赖。`dist:mac`、`dist:win`、`dist:linux` 均固定构建 x64 安装包，并且每个平台的安装包只携带自己的运行时目录。macOS 内置 QEMU 的最低系统版本是 macOS 14。
+### 主要功能
 
-| 平台 | 启动 Linux 桌面必需 | 首次下载镜像后解压必需 | 加速能力 |
-| --- | --- | --- | --- |
-| macOS | `qemu-system-x86_64` | `tar` 或 `bsdtar`，需支持 `.tar.xz` | HVF，系统自带 |
-| Windows | `qemu-system-x86_64.exe` | `tar.exe` 或 `bsdtar.exe`，需支持 `.tar.xz` | WHPX，可选；没有时回落 TCG |
-| Linux | `qemu-system-x86_64` | `tar` 或 `bsdtar`，需支持 `.tar.xz` | KVM，可选；没有时回落 TCG |
+- **隔离的 Linux 工作环境**：使用 Debian VM 保存系统、软件和用户数据，避免污染宿主机。
+- **桌面化交互**：通过 noVNC 在 Electron 窗口中显示并操作 Linux 桌面。
+- **开发工具**：支持终端、Chromium、VSCodium，以及在 VM 内安装的其他 Linux 软件。
+- **软件包管理**：可以在 Linux 终端中使用 `apt-get` 安装和更新软件。
+- **持久化磁盘**：Linux 环境使用 qcow2 磁盘，重启应用后保留用户配置和文件。
+- **跨平台桌面壳**：目标平台为 macOS、Windows 和 Linux x64。
+- **启动容错**：Guest Agent 断线时会自动重连；桌面显示提供串口启动和 VNC 探测兜底，不会无限停留在启动进度中。
 
-建议随应用打包的目录：
+### 使用场景
 
-```text
-runtime/qemu/darwin/qemu-system-x86_64
-runtime/qemu/darwin/qemu-img
-runtime/qemu/win32/qemu-system-x86_64.exe
-runtime/qemu/win32/qemu-img.exe
-runtime/qemu/linux/qemu-system-x86_64
-runtime/qemu/linux/qemu-img
+#### 统一的开发工作区
 
-runtime/tools/darwin/tar
-runtime/tools/win32/tar.exe
-runtime/tools/linux/tar
-```
+在 macOS 或 Windows 上获得一个稳定的 Debian 开发环境，运行 Linux CLI、编译工具、浏览器和编辑器，同时保留宿主机的窗口管理和文件访问能力。
 
-QEMU 需要按平台打包成可独立运行的目录。当前 Windows 目录已经包含所需 DLL，macOS 目录已经改写为应用内相对动态库路径，Linux 目录包含静态启动器、musl 加载器和共享库闭包。不能只复制一个依赖开发机系统库的 QEMU 主程序。
+#### AI Agent 与自动化任务
 
-macOS/Linux 下这些二进制需要保留可执行权限：
+为 Agent 提供一个可观察、可交互的 Linux 桌面。用户可以看到任务执行过程，也可以随时打开终端检查状态或手动接管。
 
-```bash
-chmod +x runtime/qemu/darwin/qemu-system-x86_64 runtime/qemu/darwin/qemu-img runtime/tools/darwin/tar
-chmod +x runtime/qemu/linux/qemu-system-x86_64 runtime/qemu/linux/qemu-img runtime/tools/linux/tar
-```
+#### 教学、演示和实验
 
-同一平台需要区分宿主机 CPU 架构时，也支持：
+用一个可分发的桌面应用展示 Linux 启动、系统服务、图形桌面和软件安装过程，适合课程、技术演示和原型验证。
+
+#### 安全的临时环境
+
+将不确定的脚本、工具链或实验依赖放入独立 VM 中运行，减少对宿主机开发环境的影响。正式使用前仍应根据实际威胁模型配置权限和网络策略。
+
+### 核心技术
+
+项目采用较薄的桌面应用层和独立的 Linux 虚拟机层：
 
 ```text
-runtime/qemu/darwin-arm64/qemu-system-x86_64
-runtime/qemu/darwin/arm64/qemu-system-x86_64
-runtime/tools/win32-x64/tar.exe
-runtime/tools/linux/x64/tar
+Electron
+  └─ VM Manager
+      └─ QEMU
+          └─ Debian qcow2 + systemd + XFCE
+              ├─ noVNC / WebSocket：图形桌面
+              ├─ xterm.js：启动日志与 Linux 终端
+              └─ QEMU Guest Agent：桌面集成与系统操作
 ```
 
-可用环境变量覆盖默认查找：
+Electron 负责窗口、设置、IPC 和桌面编排；QEMU 负责运行 Linux；Debian VM 内的 systemd、LightDM、XFCE、x11vnc 和 Agent Robot 提供实际系统能力。详细实现可从 `desktop/`、`components/web-os/` 和 `lib/desktop-linux.ts` 开始阅读。
+
+### 快速开始
+
+#### 环境要求
+
+- Node.js 20 或更高版本。
+- Corepack 和 pnpm 10.15.0。
+- macOS 14+、Windows x64 或 Linux x64。
+- 运行应用时通常不需要单独安装 QEMU；仓库和发行包可以携带对应运行时。
+
+#### 安装依赖
 
 ```bash
-WORKTOPER_QEMU=/absolute/path/to/qemu-system-x86_64
-WORKTOPER_TAR=/absolute/path/to/tar
-```
-
-### 制作镜像依赖
-
-只有运行 `vm:prepare` 重新制作镜像时才需要这些工具：
-
-- Node.js + Corepack
-- QEMU：`qemu-system-x86_64` 和 `qemu-img`
-- 生成 cloud-init seed ISO 的工具之一：
-  - macOS：系统自带 `hdiutil`
-  - Linux：`cloud-localds`、`genisoimage`、`mkisofs` 或 `xorriso`
-  - Windows：建议安装 QEMU 后再安装 `genisoimage`/`xorriso`，或直接使用预构建的 `seed-x64.iso`
-
-`vm:prepare` 同样会优先使用 `runtime/qemu/<platform>/qemu-img` 和 `runtime/qemu/<platform>/qemu-system-x86_64`。ISO 工具也可以放在 `runtime/tools/<platform>/`，或通过环境变量指定：
-
-```bash
-WORKTOPER_QEMU=/absolute/path/to/qemu-system-x86_64
-WORKTOPER_QEMU_IMG=/absolute/path/to/qemu-img
-WORKTOPER_GENISOIMAGE=/absolute/path/to/genisoimage
-WORKTOPER_MKISOFS=/absolute/path/to/mkisofs
-WORKTOPER_XORRISO=/absolute/path/to/xorriso
-WORKTOPER_CLOUD_LOCALDS=/absolute/path/to/cloud-localds
-```
-
-## 准备 VM 镜像
-
-```bash
+corepack enable
 corepack prepare pnpm@10.15.0 --activate
-corepack pnpm@10.15.0 install
-corepack pnpm@10.15.0 vm:prepare
+pnpm install
 ```
 
-`vm:prepare` 会下载 Debian cloud qcow2，并把 VM 资产创建到应用默认数据目录：
-
-```text
-macOS: ~/Library/Application Support/WorkToper Agent OS/vm/
-Windows: %APPDATA%\WorkToper Agent OS\vm\
-Linux: ~/.config/WorkToper Agent OS/vm/
-
-worktoper-agent-os-x64.qcow2
-seed-x64.iso
-```
-
-应用包不携带 qcow2 镜像。需要自定义镜像目录时可以设置 `WORKTOPER_VM_ASSETS_DIR` 后再运行 `vm:prepare`；运行应用时可以用 `WORKTOPER_VM_IMAGE` / `WORKTOPER_VM_SEED` 指定绝对路径。
-
-默认 cloud-init 会安装 XFCE、Chromium、VSCodium、常用 CLI 工具，并配置：
-
-```text
-用户: worktoper / worktoper
-root: root
-串口: ttyS0 root 自动登录
-桌面: lightdm 自动登录 worktoper
-```
-
-如果你接受 Google Chrome 和 Microsoft VS Code 官方二进制许可，可以显式启用：
+#### 构建和开发运行
 
 ```bash
-WORKTOPER_ALLOW_PROPRIETARY=1 corepack pnpm@10.15.0 vm:prepare
+pnpm build
+pnpm desktop:dev
 ```
 
-## 编译
+
+默认镜像用户为 `worktoper`，密码为 `worktoper`；root 密码为 `root`。镜像中的软件由 `scripts/prepare-vm.mjs` 和 cloud-init 配置。
+
+#### 打包
 
 ```bash
-corepack pnpm@10.15.0 build
+pnpm dist:mac
+pnpm dist:win
+pnpm dist:linux
 ```
 
-## 运行
+对应产物为：
 
-开发方式打开桌面应用：
-
-```bash
-corepack pnpm@10.15.0 desktop:dev
-```
-
-启动后会自动启动 VM。应用先全屏显示启动日志；Boot 100% 后，Linux 图形桌面会在同一个应用窗口中可交互运行，命令交互在应用内“终端”窗口显示。
-
-## 打包
-
-当前系统目录包：
-
-```bash
-corepack pnpm@10.15.0 desktop:pack
-```
-
-安装包：
-
-```bash
-corepack pnpm@10.15.0 dist:mac
-corepack pnpm@10.15.0 dist:win
-corepack pnpm@10.15.0 dist:linux
-```
-
-建议分别在目标平台打包：
-
+- macOS：DMG 和 ZIP。
 - Windows：NSIS 安装包和 portable 包。
-- macOS：dmg 和 zip。正式分发需要 Apple Developer ID 签名与 notarization。
 - Linux：AppImage 和 deb。
 
-打包命令只使用 `runtime/electron` 中预置的 macOS、Windows、Linux x86_64 Electron 发行包，不会在构建期间重新下载 Electron，也支持在 macOS 上生成三个平台的 x64 安装包。
+正式发布 macOS 应用时，还需要 Apple Developer ID 签名和 notarization。
 
-每个平台的安装包都包含对应的 QEMU、QEMU 固件、动态库和 tar 工具。用户安装后不需要另行安装 Homebrew、QEMU、tar 或其他宿主机运行依赖。
 
-## 使用 Linux
+应用设置中还可以选择共享目录。共享目录会挂载到 Linux VM 的 `/home/worktoper/Shared`。
 
-终端中可以直接运行：
+### 项目结构
 
-```bash
-whoami
-uname -a
-apt-cache policy
-sudo apt-get update
-sudo apt-get install -y git curl build-essential
+```text
+app/                  Next.js 页面入口
+components/web-os/    智能桌面 UI、终端和嵌入式桌面
+desktop/              Electron 主进程、IPC 和 VM Manager
+lib/                  前端运行时与 Electron bridge 封装
+scripts/              VM 镜像准备和运行时打包脚本
+runtime/              QEMU、Electron、tar 等平台运行时
+images/               应用图标和桌面背景
 ```
 
-打开 GUI 应用：
+### 开发说明
+
+- 前端使用 Next.js、React 和 TypeScript，桌面壳使用 Electron。
+- Linux 图形桌面通过 noVNC 连接到 VM 内的 x11vnc。
+- Linux 命令、APT 安装和 GUI 应用都运行在 VM 内，不依赖宿主机的 Linux、Docker 或 SSH 服务端。
+- 运行时二进制和第三方组件可能有各自的许可证，请同时阅读 `runtime/THIRD_PARTY.md`。
+
+### 参与贡献
+
+欢迎提交 Issue、改进文档、修复 bug 和贡献代码。建议在提交前：
 
 ```bash
-worktoper-open-browser
-worktoper-open-code
+pnpm build
+node --check desktop/vm-manager.cjs
+git diff --check
 ```
 
-Dock 中的 Chrome/VS Code 图标会向 VM 发送对应启动命令，实际窗口显示在 Linux 桌面窗口里。
+如果修改了 VM 启动流程，请同时验证至少一种 Guest Agent 正常路径和一种断线/不可用兜底路径。
 
-在桌面右上角控制菜单的“设置”中选择共享目录，保存后 VM 会自动重启并把宿主机目录挂载到 `/home/worktoper/Shared`。macOS 使用 `mapped-xattr`，Linux 使用 `mapped-file`，Windows 使用 `none`，三个平台都通过 QEMU 9p 提供双向读写；Windows 使用本机 TCP Guest Agent 通道执行客体挂载命令。可通过 `WORKTOPER_SHARED_SECURITY_MODEL` 覆盖共享安全模型。
+### 开源协议
 
-## 轻量化策略
+本项目源代码使用 [MIT License](LICENSE) 发布。MIT 协议允许在保留版权和许可声明的前提下使用、复制、修改、合并、发布、再许可和销售软件。
 
-- Electron 应用只负责桌面壳、VM 管理、串口日志和应用启动控制。
-- Electron 安装包只包含编译后的 `out`、桌面主进程和运行必需资源，不重复携带 Next.js 源码、构建依赖或背景图副本。
-- Electron 仅保留应用支持的英文和简体中文 locale，并使用最高压缩等级生成安装包。
-- Linux 系统保存在应用默认数据目录的 qcow2 磁盘里，支持持久化，不随应用包一起打包。
-- Linux 镜像是唯一与应用分离的外部文件；本地不存在镜像时，应用按配置的镜像地址下载并解压，之后直接从持久磁盘启动。
-- VS Code、Chrome、Layan、Papirus、x11vnc 和锁屏组件必须预装在镜像中，应用启动后不会联网补装桌面依赖。
-- QEMU 优先使用硬件加速：macOS HVF、Linux KVM、Windows WHPX；不可用时回落 TCG。
-- 可以通过环境变量调整资源：
+---
+
+
+### Background
+
+Developers often move between a host operating system, containers, remote servers, and scattered desktop tools. This makes environments harder to reproduce and makes Linux GUI workflows less approachable on macOS or Windows.
+
+WorkToper Agent OS provides one visual workspace instead: Electron owns the desktop shell, while a real Debian Linux VM owns the system environment. Development tools, terminal commands, GUI applications, and agent workflows can run together inside the same interactive desktop without turning the host machine into a Linux system or relying on a browser-based wasm emulator.
+
+### Smart desktop
+
+The main experience is an embedded Linux smart desktop:
+
+- Real Linux boot logs and progress are visible during startup.
+- XFCE, a terminal, and GUI applications run inside the same application window.
+- Text clipboard synchronization works in both directions between the host and Linux desktop.
+- A host directory can be mounted into the Linux workspace.
+- Agent Robot and desktop shortcuts can launch automation tasks and development tools.
+
+![WorkToper Agent OS smart desktop](https://www.worktoper.com/static/images/worktoper-agent-os.png)
+
+### Features
+
+- **Isolated Linux workspace**: Debian runs in a VM so packages and system changes stay separate from the host.
+- **Desktop interaction**: noVNC displays and controls the Linux desktop inside Electron.
+- **Developer tools**: terminal, Chromium, VSCodium, and other Linux applications installed in the VM.
+- **Package management**: use `apt-get` directly in the Linux terminal.
+- **Persistent storage**: a qcow2 disk keeps user files and configuration across restarts.
+- **Cross-platform shell**: targets macOS, Windows, and Linux x64.
+- **Startup recovery**: Guest Agent reconnects automatically; serial and VNC readiness fallbacks prevent an endless boot wait.
+
+### Use cases
+
+- **Consistent development workspace**: use a reproducible Debian environment on macOS or Windows while keeping host window management and file access.
+- **AI agents and automation**: provide agents with an observable Linux desktop that users can inspect or take over.
+- **Teaching and demos**: demonstrate Linux boot, services, GUI applications, and package installation from one distributable app.
+- **Temporary experimentation**: keep uncertain scripts, toolchains, and dependencies inside a separate VM. Apply your own security and network policy for production use.
+
+### Core technology
+
+```text
+Electron
+  └─ VM Manager
+      └─ QEMU
+          └─ Debian qcow2 + systemd + XFCE
+              ├─ noVNC / WebSocket: graphical desktop
+              ├─ xterm.js: boot logs and Linux terminal
+              └─ QEMU Guest Agent: desktop integration and system operations
+```
+
+Electron handles the window, settings, IPC, and desktop orchestration. QEMU runs Linux, while systemd, LightDM, XFCE, x11vnc, and Agent Robot provide the guest-side capabilities. Start exploring the implementation in `desktop/`, `components/web-os/`, and `lib/desktop-linux.ts`.
+
+### Quick start
+
+#### Requirements
+
+- Node.js 20 or newer.
+- Corepack and pnpm 10.15.0.
+- macOS 14+, Windows x64, or Linux x64.
+- QEMU is normally bundled for application runtime; the repository and release packages can carry platform-specific runtimes.
+
+#### Install dependencies
 
 ```bash
-WORKTOPER_VM_MEMORY=6144
-WORKTOPER_VM_CPUS=4
-WORKTOPER_VM_IMAGE=/absolute/path/to/worktoper-agent-os-x64.qcow2
-WORKTOPER_DISPLAY_MODE=embedded
+corepack enable
+corepack prepare pnpm@10.15.0 --activate
+pnpm install
 ```
 
-## 商用合规
+#### Build and run in development
 
-核心方案使用开源组件：
+```bash
+pnpm build
+pnpm desktop:dev
+```
 
-- QEMU：GPLv2
-- Debian：Debian Free Software Guidelines 发行版，包许可证各不相同
-- noVNC：MPL-2.0
-- Chromium：开源浏览器项目
-- VSCodium：基于 VS Code 源码构建的开源发行版
+If no VM image exists yet, prepare a Debian image:
 
-Google Chrome 和 Microsoft VS Code 官方 Linux 二进制不是默认开源组件。若产品必须“开源且可商用友好”，默认使用 Chromium + VSCodium；若必须使用官方 Chrome/VS Code，需要在发行和安装流程中单独处理它们的许可条款。
+```bash
+pnpm vm:prepare
+```
+
+The default image uses `worktoper` / `worktoper` for the regular user and `root` for root. Image provisioning is defined by `scripts/prepare-vm.mjs` and cloud-init.
+
+#### Package the application
+
+```bash
+pnpm dist:mac
+pnpm dist:win
+pnpm dist:linux
+```
+
+The targets are DMG/ZIP for macOS, NSIS/portable for Windows, and AppImage/deb for Linux. macOS distribution additionally requires Apple Developer ID signing and notarization.
+
+
+The settings UI can also select a shared host directory. It is mounted at `/home/worktoper/Shared` inside the Linux VM.
+
+### Project layout
+
+```text
+app/                  Next.js entry points
+components/web-os/    Smart desktop UI, terminal, and embedded display
+desktop/              Electron main process, IPC, and VM Manager
+lib/                  Frontend runtime and Electron bridge wrappers
+scripts/              VM image preparation and runtime bundling
+runtime/              QEMU, Electron, tar, and platform runtimes
+images/               Application icons and desktop backgrounds
+```
+
+### Development notes
+
+- The frontend uses Next.js, React, and TypeScript; the desktop shell uses Electron.
+- The Linux graphical desktop is connected through noVNC to x11vnc inside the VM.
+- Linux commands, APT installation, and GUI applications run in the VM rather than requiring Linux, Docker, or an SSH server on the host.
+- Bundled runtimes and third-party components may carry separate licenses; see `runtime/THIRD_PARTY.md`.
+
+### Contributing
+
+Issues, documentation improvements, bug fixes, and code contributions are welcome. Before opening a change, run:
+
+```bash
+pnpm build
+node --check desktop/vm-manager.cjs
+git diff --check
+```
+
+Changes to VM startup should be checked against both the normal Guest Agent path and at least one Guest Agent recovery path.
+
+### License
+
+The project source is released under the [MIT License](LICENSE). You may use, copy, modify, merge, publish, sublicense, and sell the software as long as the copyright and license notice are preserved.

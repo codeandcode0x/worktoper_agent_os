@@ -109,9 +109,35 @@ async function getFreeVncDisplay() {
 }
 
 function getQgaSocketPath(app) {
-  if (process.platform === "win32") return ""
+  if (process.platform !== "darwin") return ""
   const name = `worktoper-qga-${process.pid}.sock`
   return path.join(app.getPath("temp") || os.tmpdir(), name)
+}
+
+function hasVncHandshake(port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    if (!port) {
+      resolve(false)
+      return
+    }
+    const socket = net.createConnection({ host: "127.0.0.1", port })
+    let settled = false
+    let buffer = ""
+    const finish = (ready) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(ready)
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("ascii")
+      if (/^RFB \d{3}\.\d{3}\n/.test(buffer)) finish(true)
+    })
+    socket.once("error", () => finish(false))
+    socket.once("close", () => finish(false))
+  })
 }
 
 class GuestAgent {
@@ -135,15 +161,24 @@ class GuestAgent {
   }
 
   close() {
-    this.socket?.destroy()
+    const socket = this.socket
     this.socket = null
+    socket?.destroy()
     this.buffer = ""
     if (this.pending) {
+      clearTimeout(this.pending.timer)
       this.pending.reject(new Error("QEMU guest agent disconnected"))
       this.pending = null
     }
     const queued = this.queue.splice(0)
-    queued.forEach((item) => item.reject(new Error("QEMU guest agent disconnected")))
+    queued.forEach((item) => {
+      clearTimeout(item.timer)
+      item.reject(new Error("QEMU guest agent disconnected"))
+    })
+  }
+
+  isConnected() {
+    return Boolean(this.socket && !this.socket.destroyed && this.socket.readyState === "open")
   }
 
   onData(chunk) {
@@ -161,6 +196,7 @@ class GuestAgent {
     if (!this.pending) return
     const pending = this.pending
     this.pending = null
+    clearTimeout(pending.timer)
     try {
       const message = JSON.parse(line)
       if (message.error) {
@@ -174,9 +210,25 @@ class GuestAgent {
     this.flush()
   }
 
-  execute(command) {
+  execute(command, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
-      this.queue.push({ command, resolve, reject })
+      if (!this.socket || this.socket.destroyed) {
+        reject(new Error("QEMU guest agent is not connected"))
+        return
+      }
+      const item = { command, resolve, reject, timer: null }
+      item.timer = setTimeout(() => {
+        if (this.pending === item) {
+          this.pending = null
+          reject(new Error("QEMU guest agent command timed out"))
+          this.close()
+          return
+        }
+        const index = this.queue.indexOf(item)
+        if (index >= 0) this.queue.splice(index, 1)
+        reject(new Error("QEMU guest agent command timed out"))
+      }, timeoutMs)
+      this.queue.push(item)
       this.flush()
     })
   }
@@ -819,6 +871,14 @@ class VmManager {
     this.desktopReady = false
     this.lastDesktopLog = ""
     this.desktopRepairAttempted = false
+    this.desktopStartupTimer = null
+    this.vncProbeTimer = null
+    this.serialDesktopFallbackTimer = null
+    this.serialDesktopFallbackAttempts = 0
+    this.guestAgentRetryTimer = null
+    this.guestAgentConnecting = null
+    this.guestAgentConnectAttempts = 0
+    this.guestIntegrationPromise = null
     this.pendingLaunches = []
     this.vncProxyServer = null
     this.vncTcpPort = 0
@@ -968,7 +1028,7 @@ class VmManager {
     })
     const qgaSocketPath = getQgaSocketPath(this.app)
     if (qgaSocketPath) fs.rmSync(qgaSocketPath, { force: true })
-    const qgaPort = process.platform === "win32" ? await getFreePort() : 0
+    const qgaPort = process.platform === "darwin" ? 0 : await getFreePort()
     const settings = this.getSettings?.() || {}
     const memoryMb = Number(process.env.WORKTOPER_VM_MEMORY || settings.memoryMb || 4096)
     const cpus = Number(process.env.WORKTOPER_VM_CPUS || settings.cpus || Math.max(2, Math.min(os.cpus().length, 4)))
@@ -994,6 +1054,11 @@ class VmManager {
     this.desktopReady = false
     this.lastDesktopLog = ""
     this.desktopRepairAttempted = false
+    this.serialDesktopFallbackAttempts = 0
+    this.guestAgentConnectAttempts = 0
+    this.guestIntegrationPromise = null
+    this.clearDesktopStartupTimers()
+    this.clearGuestAgentRetry()
     qemuProcess.stdout.on("data", (chunk) => this.send("worktoper:vm:boot", chunk.toString("utf8")))
     qemuProcess.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8")
@@ -1016,6 +1081,10 @@ class VmManager {
       this.pendingShellWrites = []
       this.desktopReady = false
       this.desktopRepairAttempted = false
+      this.serialDesktopFallbackAttempts = 0
+      this.guestIntegrationPromise = null
+      this.clearDesktopStartupTimers()
+      this.clearGuestAgentRetry()
       this.pendingLaunches = []
       this.vncProxyServer?.close()
       this.vncProxyServer = null
@@ -1047,50 +1116,152 @@ class VmManager {
     this.connectSerial(serialPort)
     this.qgaPort = qgaPort
     this.connectGuestAgent(qgaSocketPath, qgaPort)
+    this.waitForHostDesktopReady()
     setTimeout(() => {
       if (this.process && this.state.phase !== "ready") this.update({ phase: "loading", detail: this.message("QEMU started. Waiting for the Linux desktop.", "QEMU 已启动，正在等待 Linux 桌面完成启动"), bootProgress: Math.max(this.state.bootProgress, 68), network: "connecting", diskActive: true })
     }, 1200)
     return this.connection
   }
 
-  connectGuestAgent(socketPath, port = 0) {
-    if (!socketPath && !port) return
-    let attempts = 0
-    const connect = () => {
-      if (!this.process || this.guestAgent) return
-      attempts += 1
+  connectGuestAgent(socketPath, port = 0, delayMs = 1200) {
+    if ((!socketPath && !port) || !this.process || this.state.phase === "error" || this.guestAgent || this.guestAgentConnecting || this.guestAgentRetryTimer) return
+    this.guestAgentRetryTimer = setTimeout(async () => {
+      this.guestAgentRetryTimer = null
+      if (!this.process || this.guestAgent || this.guestAgentConnecting) return
+      this.guestAgentConnectAttempts += 1
       const agent = new GuestAgent(socketPath, port)
+      this.guestAgentConnecting = agent
       agent.connect()
-      const timer = setTimeout(() => {
-        if (this.guestAgent !== agent) agent.close()
-        if (!this.guestAgent && attempts < 120) setTimeout(connect, 500)
-      }, 800)
-      agent.execute({ execute: "guest-ping" }).then(() => {
-        clearTimeout(timer)
+      try {
+        await agent.execute({ execute: "guest-ping" }, 2000)
+        if (!this.process || this.guestAgentConnecting !== agent) {
+          agent.close()
+          return
+        }
+        this.guestAgentConnecting = null
+        this.guestAgentConnectAttempts = 0
         this.guestAgent = agent
         this.update({ detail: this.message("QEMU Guest Agent connected. Detecting the Linux desktop.", "QEMU Guest Agent 已连接，正在检测 Linux 桌面"), bootProgress: Math.max(this.state.bootProgress, 72), network: "connected" })
-        this.waitForDesktopReady()
-      }).catch(() => {
-        clearTimeout(timer)
+        if (this.desktopReady) {
+          void this.finishGuestIntegration()
+        } else {
+          this.waitForDesktopReady()
+        }
+      } catch {
+        if (this.guestAgentConnecting === agent) this.guestAgentConnecting = null
         agent.close()
-        if (attempts < 120) setTimeout(connect, 500)
-      })
+        if (!this.process || this.state.phase === "error" || this.guestAgent) return
+        if (this.guestAgentConnectAttempts === 120) {
+          this.send("worktoper:vm:boot", `\r\n[WorkToper] ${this.message("Guest Agent did not connect; continuing with the Linux display fallback.", "Guest Agent 未连接，继续使用 Linux 显示兜底通道。")}\r\n`)
+        }
+        const retryDelay = this.guestAgentConnectAttempts < 120 ? 500 : 5000
+        this.connectGuestAgent(socketPath, port, retryDelay)
+      }
+    }, delayMs)
+  }
+
+  clearGuestAgentRetry() {
+    if (this.guestAgentRetryTimer) clearTimeout(this.guestAgentRetryTimer)
+    this.guestAgentRetryTimer = null
+    this.guestAgentConnecting?.close()
+    this.guestAgentConnecting = null
+  }
+
+  clearDesktopStartupTimers() {
+    if (this.desktopStartupTimer) clearTimeout(this.desktopStartupTimer)
+    if (this.vncProbeTimer) clearTimeout(this.vncProbeTimer)
+    if (this.serialDesktopFallbackTimer) clearTimeout(this.serialDesktopFallbackTimer)
+    this.desktopStartupTimer = null
+    this.vncProbeTimer = null
+    this.serialDesktopFallbackTimer = null
+  }
+
+  waitForHostDesktopReady() {
+    const configuredTimeoutMs = Number(process.env.WORKTOPER_DESKTOP_START_TIMEOUT_MS || 180000)
+    const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0 ? configuredTimeoutMs : 180000
+    const startedAt = Date.now()
+    const qemuProcess = this.process
+    const vncTcpPort = this.vncTcpPort
+    const check = async () => {
+      if (!this.process || this.process !== qemuProcess || this.desktopReady) return
+      if (this.state.phase === "error") return
+      if (await hasVncHandshake(vncTcpPort)) {
+        if (this.process !== qemuProcess || this.desktopReady || this.state.phase === "error") return
+        this.markDesktopReady("host VNC readiness probe")
+        if (this.guestAgent) void this.finishGuestIntegration()
+        return
+      }
+      if (this.process !== qemuProcess || this.desktopReady || this.state.phase === "error") return
+      if (Date.now() - startedAt >= timeoutMs) {
+        this.clearDesktopStartupTimers()
+        this.clearGuestAgentRetry()
+        this.update({
+          phase: "error",
+          detail: this.message("Linux desktop startup timed out. Check the boot log for Guest Agent, LightDM, or x11vnc errors.", "Linux 桌面启动超时，请在启动日志中检查 Guest Agent、LightDM 或 x11vnc 错误。"),
+          cpuActive: false,
+          diskActive: false,
+          network: this.shellReady ? "connected" : "connecting",
+        })
+        return
+      }
+      this.vncProbeTimer = setTimeout(check, 1000)
     }
-    setTimeout(connect, 1200)
+    this.desktopStartupTimer = setTimeout(() => {
+      if (!this.process || this.process !== qemuProcess || this.desktopReady) return
+      this.send("worktoper:vm:boot", `\r\n[WorkToper] ${this.message("Desktop startup is taking longer than expected; recovery checks are still running.", "桌面启动时间较长，恢复检查仍在继续。")}\r\n`)
+    }, Math.min(60000, Math.max(15000, Math.floor(timeoutMs / 2))))
+    void check()
+  }
+
+  startSerialDesktopFallback() {
+    if (!this.process || !this.serial || this.serial.destroyed || this.desktopReady || this.guestAgent?.isConnected()) return
+    this.serialDesktopFallbackAttempts += 1
+    const command = "if command -v x11vnc >/dev/null 2>&1 && ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1 && [ ! -e /tmp/worktoper-x11vnc-fallback.pending ]; then touch /tmp/worktoper-x11vnc-fallback.pending; nohup sh -lc 'trap \"rm -f /tmp/worktoper-x11vnc-fallback.pending\" EXIT; for attempt in $(seq 1 45); do [ -S /tmp/.X11-unix/X0 ] && break; sleep 1; done; [ -S /tmp/.X11-unix/X0 ] || exit 1; x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -clipboard -setclipboard -quiet -o /tmp/worktoper-x11vnc.log' >/tmp/worktoper-x11vnc-start.log 2>&1 & fi"
+    this.serial.write(`${command}\r`)
+    if (this.serialDesktopFallbackAttempts < 24) {
+      this.serialDesktopFallbackTimer = setTimeout(() => this.startSerialDesktopFallback(), 5000)
+    }
+  }
+
+  finishGuestIntegration() {
+    if (!this.guestAgent) return Promise.resolve(false)
+    if (this.guestIntegrationPromise) return this.guestIntegrationPromise
+    const agent = this.guestAgent
+    const integration = (async () => {
+      try {
+        const sharedDirectoryReady = await this.ensureSharedDirectory()
+        if (!sharedDirectoryReady && this.sharedDirectory) return false
+        this.resizeDesktop(1920, 1080)
+        return true
+      } catch (error) {
+        this.send("worktoper:vm:boot", `\r\n[WorkToper] Guest integration failed: ${error instanceof Error ? error.message : String(error)}\r\n`)
+        if (this.guestAgent === agent && !agent.isConnected()) {
+          this.guestAgent = null
+          agent.close()
+          this.startSerialDesktopFallback()
+          this.connectGuestAgent(this.connection?.qgaSocketPath || "", this.qgaPort, 250)
+        }
+        return false
+      } finally {
+        this.guestIntegrationPromise = null
+      }
+    })()
+    this.guestIntegrationPromise = integration
+    return integration
   }
 
   waitForDesktopReady() {
     let attempts = 0
     const check = async () => {
-      if (!this.process || !this.guestAgent || this.desktopReady) return
+      if (!this.process || !this.guestAgent || this.desktopReady || this.state.phase === "error") return
       attempts += 1
       try {
         const status = await this.guestAgent.guestShell("(systemctl is-active --quiet lightdm || systemctl is-active --quiet display-manager) && pgrep -u worktoper -x xfce4-session >/dev/null && pgrep -u worktoper -x xfce4-panel >/dev/null && pgrep -u worktoper -x xfdesktop >/dev/null && pgrep -u worktoper -x xfwm4 >/dev/null && pgrep -f 'Xorg|Xwayland' >/dev/null", { captureOutput: true })
         if (status.exitcode === 0) {
           const vncReady = await this.ensureEmbeddedVnc()
           if (vncReady) {
-            const sharedDirectoryReady = await this.ensureSharedDirectory()
-            this.markDesktopReady("lightdm / XFCE / x11vnc readiness check", sharedDirectoryReady)
+            await this.ensureSharedDirectory()
+            this.markDesktopReady("lightdm / XFCE / x11vnc readiness check")
             return
           }
           this.update({ phase: "loading", detail: this.message("XFCE started. Preparing the embedded desktop display.", "XFCE 已启动，正在准备内嵌桌面画面"), bootProgress: Math.max(this.state.bootProgress, 96), network: "connected" })
@@ -1101,13 +1272,19 @@ class VmManager {
         if (attempts <= 6 || attempts % 8 === 0) await this.logDesktopStartup(attempts)
       } catch (error) {
         this.send("worktoper:vm:boot", `\r\n[WorkToper] Desktop readiness check failed: ${error instanceof Error ? error.message : String(error)}\r\n`)
+        if (this.guestAgent && !this.guestAgent.isConnected()) {
+          const agent = this.guestAgent
+          this.guestAgent = null
+          agent.close()
+          this.startSerialDesktopFallback()
+          this.connectGuestAgent(this.connection?.qgaSocketPath || "", this.qgaPort, 250)
+          return
+        }
       }
       if (attempts < 240) {
         const progress = Math.min(98, 72 + Math.floor(attempts / 4))
         this.update({ phase: "loading", detail: this.message("Linux desktop is still starting. Waiting for lightdm / XFCE.", "Linux 桌面仍在启动，等待 lightdm / XFCE"), bootProgress: Math.max(this.state.bootProgress, progress), network: "connected" })
         setTimeout(check, 1000)
-      } else {
-        this.update({ phase: "error", detail: this.message("Linux desktop startup timed out: no lightdm / XFCE session was detected", "Linux 桌面启动超时：未检测到 lightdm / XFCE 会话"), cpuActive: false, diskActive: false, network: "connected" })
       }
     }
     void check()
@@ -1506,7 +1683,7 @@ class VmManager {
       "if ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1; then",
       "  echo '$ x11vnc -display :0 -rfbport 5900'",
       "  pkill -x x11vnc >/dev/null 2>&1 || true",
-      "  nohup x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -quiet -o /tmp/worktoper-x11vnc.log >/tmp/worktoper-x11vnc-start.log 2>&1 &",
+      "  nohup x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -clipboard -setclipboard -quiet -o /tmp/worktoper-x11vnc.log >/tmp/worktoper-x11vnc-start.log 2>&1 &",
       "fi",
       "sleep 1",
       "vnc_ready=0",
@@ -1550,13 +1727,14 @@ class VmManager {
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Linux desktop startup status\r\n${text}\r\n`)
   }
 
-  markDesktopReady(source = "desktop ready", sharedDirectoryReady = true) {
+  markDesktopReady(source = "desktop ready") {
     if (this.desktopReady) return
     this.desktopReady = true
+    this.clearDesktopStartupTimers()
     this.send("worktoper:vm:boot", `\r\n[WorkToper] Boot 100% - Linux desktop is ready (${source}). Embedded display is active.\r\n`)
     this.update({
       phase: "ready",
-      detail: sharedDirectoryReady ? this.message("Linux desktop is ready", "Linux 桌面已就绪") : this.state.detail,
+      detail: this.message("Linux desktop is ready", "Linux 桌面已就绪"),
       bootProgress: 100,
       cpuActive: false,
       diskActive: false,
@@ -1609,6 +1787,7 @@ class VmManager {
     if (promptText) this.send("worktoper:vm:terminal", promptText)
     const queued = this.pendingShellWrites.splice(0)
     queued.forEach((data) => this.write(data))
+    this.startSerialDesktopFallback()
   }
 
   write(data) {
@@ -1754,12 +1933,17 @@ class VmManager {
     this.serial = null
     this.guestAgent?.close()
     this.guestAgent = null
+    this.guestIntegrationPromise = null
+    this.clearDesktopStartupTimers()
+    this.clearGuestAgentRetry()
     this.vncProxyServer?.close()
     this.vncProxyServer = null
     this.vncTcpPort = 0
     this.agentRobotPort = 0
     this.sharedDirectory = ""
     this.qgaPort = 0
+    this.serialDesktopFallbackAttempts = 0
+    this.guestAgentConnectAttempts = 0
     if (this.resizeTimer) clearTimeout(this.resizeTimer)
     this.resizeTimer = null
     this.pendingDesktopSize = null

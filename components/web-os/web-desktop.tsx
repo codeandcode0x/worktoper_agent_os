@@ -263,6 +263,7 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
   const lastResizeRef = useRef("")
   const lastHostClipboardRef = useRef("")
   const lastRemoteClipboardRef = useRef("")
+  const clipboardSyncRef = useRef<Promise<void> | null>(null)
   const [connection, setConnection] = useState<VmConnection | null>(() => desktopLinux.getConnection())
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState("")
@@ -271,15 +272,19 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
     hostRef.current?.focus({ preventScroll: true })
     rfbRef.current?.focus?.({ preventScroll: true })
   }
-  const syncClipboardToRemote = async () => {
+  const sendClipboardToRemote = (text: string) => {
     const rfb = rfbRef.current
-    if (!rfb?.clipboardPasteFrom) return
-    try {
-      const text = await desktopLinux.readClipboardText()
-      if (!text || text === lastHostClipboardRef.current) return
-      lastHostClipboardRef.current = text
-      rfb.clipboardPasteFrom(text)
-    } catch {}
+    if (!rfb?.clipboardPasteFrom || !text || text === lastHostClipboardRef.current) return
+    lastHostClipboardRef.current = text
+    rfb.clipboardPasteFrom(text)
+  }
+  const syncClipboardToRemote = () => {
+    if (clipboardSyncRef.current) return clipboardSyncRef.current
+    clipboardSyncRef.current = desktopLinux.readClipboardText()
+      .then((text) => sendClipboardToRemote(text))
+      .catch(() => undefined)
+      .finally(() => { clipboardSyncRef.current = null })
+    return clipboardSyncRef.current
   }
 
   useEffect(() => {
@@ -431,7 +436,10 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
     if (!connected || runtime.phase !== "ready") return
     const sync = () => void syncClipboardToRemote()
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") sync()
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+        event.preventDefault()
+        sync()
+      }
     }
     window.addEventListener("focus", sync)
     window.addEventListener("copy", sync)
@@ -450,6 +458,11 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
     }
   }, [connected, runtime.phase])
 
+  const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    sendClipboardToRemote(event.clipboardData.getData("text/plain"))
+  }
+
   return <section className="embedded-desktop-surface" aria-label={t("Linux graphical desktop", "Linux 图形桌面")}>
     <div
       className="embedded-vnc-host"
@@ -460,6 +473,7 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
       onTouchStart={() => { focusDesktop(); void syncClipboardToRemote() }}
       onWheel={focusDesktop}
       onKeyDown={focusDesktop}
+      onPaste={handlePaste}
       onContextMenu={(event) => event.preventDefault()}
     />
     {error && !connected && <div className="desktop-connect-error" aria-live="polite"><AppWindow /><strong>{error}</strong><span>{runtime.detail}</span></div>}

@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "WorkToper Agent OS desktop app with a QEMU-backed Linux desktop VM.",
   "desktopName": "worktoper-agent-os",
-  "private": true,
   "packageManager": "pnpm@10.15.0",
   "main": "desktop/main.cjs",
   "author": {
