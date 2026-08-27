@@ -4,7 +4,7 @@
 
 [English](#english) · [MIT License](LICENSE)
 
-![WorkToper Agent OS 智能桌面](https://www.worktoper.com/static/images/worktoper-agent-os.png)
+<img src="docs/images/worktoper-agent-os.png" alt="WorkToper Agent OS 智能桌面" width="960">
 
 
 ### 项目背景
@@ -166,8 +166,6 @@ The main experience is an embedded Linux smart desktop:
 - Text clipboard synchronization works in both directions between the host and Linux desktop.
 - A host directory can be mounted into the Linux workspace.
 - Agent Robot and desktop shortcuts can launch automation tasks and development tools.
-
-![WorkToper Agent OS smart desktop](https://www.worktoper.com/static/images/worktoper-agent-os.png)
 
 ### Features
 
