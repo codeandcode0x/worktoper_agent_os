@@ -5,7 +5,7 @@
   <img src="docs/images/worktoper-agent-os.png" alt="WorkToper Agent OS smart desktop" width="1100">
 </div>
 
-[中文](README.md) · [Website](https://www.worktoper.com/agent-os) · [Download](https://www.worktoper.com/agent-os/downloads?lang=en) · [MIT License](LICENSE)
+[中文](README.zh-CN.md) · [Website](https://www.worktoper.com/agent-os) · [Download](https://www.worktoper.com/agent-os/downloads?lang=en) · [MIT License](LICENSE)
 
 
 ## A desktop that works with your AI Agent
