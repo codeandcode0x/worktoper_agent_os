@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleDisplayName</key>
+    <string>WorkToper Agent OS</string>
+    <key>CFBundleExecutable</key>
+    <string>WorkToper Agent OS</string>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.worktoper.agentos</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>WorkToper Agent OS</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>DTCompiler</key>
+    <string>com.apple.compilers.llvm.clang.1_0</string>
+    <key>DTSDKBuild</key>
+    <string>24F74</string>
+    <key>DTSDKName</key>
+    <string>macosx15.5</string>
+    <key>DTXcode</key>
+    <string>1640</string>
+    <key>DTXcodeBuild</key>
+    <string>16F6</string>
+    <key>ElectronAsarIntegrity</key>
+    <dict>
+      <key>Resources/app.asar</key>
+      <dict>
+        <key>algorithm</key>
+        <string>SHA256</string>
+        <key>hash</key>
+        <string>f1cb26a7f7913e47dbd5ab5d934ee94e5935b3fae32ac28bba5b3f2982553bfb</string>
+      </dict>
+      <key>Resources/default_app.asar</key>
+      <dict>
+        <key>algorithm</key>
+        <string>SHA256</string>
+        <key>hash</key>
+        <string>553d6dd413d71a62ae1e67b1db59bd83fadf16ae529f015415dce85787ea437b</string>
+      </dict>
+    </dict>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSEnvironment</key>
+    <dict>
+      <key>MallocNanoZone</key>
+      <string>0</string>
+    </dict>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+      <key>NSAllowsArbitraryLoads</key>
+      <true/>
+      <key>NSAllowsLocalNetworking</key>
+      <true/>
+      <key>NSExceptionDomains</key>
+      <dict>
+        <key>127.0.0.1</key>
+        <dict>
+          <key>NSIncludesSubdomains</key>
+          <false/>
+          <key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+          <true/>
+          <key>NSTemporaryExceptionAllowsInsecureHTTPSLoads</key>
+          <false/>
+          <key>NSTemporaryExceptionMinimumTLSVersion</key>
+          <string>1.0</string>
+          <key>NSTemporaryExceptionRequiresForwardSecrecy</key>
+          <false/>
+        </dict>
+        <key>localhost</key>
+        <dict>
+          <key>NSIncludesSubdomains</key>
+          <false/>
+          <key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+          <true/>
+          <key>NSTemporaryExceptionAllowsInsecureHTTPSLoads</key>
+          <false/>
+          <key>NSTemporaryExceptionMinimumTLSVersion</key>
+          <string>1.0</string>
+          <key>NSTemporaryExceptionRequiresForwardSecrecy</key>
+          <false/>
+        </dict>
+      </dict>
+    </dict>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>This app needs access to audio capture</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>This app needs access to Bluetooth</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>This app needs access to Bluetooth</string>
+    <key>NSCameraUsageDescription</key>
+    <string>This app needs access to the camera</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 WorkToper</string>
+    <key>NSMainNibFile</key>
+    <string>MainMenu</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>This app needs access to the microphone</string>
+    <key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
+    <false/>
+    <key>NSPrincipalClass</key>
+    <string>AtomApplication</string>
+    <key>NSQuitAlwaysKeepsWindows</key>
+    <false/>
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+  </dict>
+</plist>
