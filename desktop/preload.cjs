@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("worktoperVM", {
   getWindowFullscreen: () => ipcRenderer.invoke("worktoper:window:fullscreen:get"),
   exitWindowFullscreen: () => ipcRenderer.invoke("worktoper:window:fullscreen:exit"),
   lock: () => ipcRenderer.invoke("worktoper:vm:lock"),
+  wakeDisplay: (forceRestart = false) => ipcRenderer.invoke("worktoper:vm:wake-display", Boolean(forceRestart)),
   readClipboardText: () => ipcRenderer.invoke("worktoper:clipboard:read-text"),
   writeClipboardText: (text) => ipcRenderer.invoke("worktoper:clipboard:write-text", text),
   restartApp: () => ipcRenderer.invoke("worktoper:app:restart"),
@@ -41,5 +42,10 @@ contextBridge.exposeInMainWorld("worktoperVM", {
     const listener = (_event, fullscreen) => callback(Boolean(fullscreen))
     ipcRenderer.on("worktoper:window:fullscreen-changed", listener)
     return () => ipcRenderer.off("worktoper:window:fullscreen-changed", listener)
+  },
+  onSystemPower: (callback) => {
+    const listener = (_event, state) => callback(state === "lock" ? "lock" : "resume")
+    ipcRenderer.on("worktoper:system:power", listener)
+    return () => ipcRenderer.off("worktoper:system:power", listener)
   },
 })

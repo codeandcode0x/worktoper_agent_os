@@ -10,6 +10,7 @@ const { spawn, spawnSync } = require("node:child_process")
 const DEFAULT_VM_DOWNLOAD_KEY = "28112458e7b236b33bf95e8d14999f736a16fac665c9bbffc5ea38fb7574e284"
 const DEFAULT_VM_ARCHIVE_VERSION = "v1.0"
 const DEFAULT_AGENT_ROBOT_PORT = 8088
+const X11VNC_COMMAND = "x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -quiet -o /tmp/worktoper-x11vnc.log"
 
 function fileExists(filePath) {
   try {
@@ -253,7 +254,7 @@ class GuestAgent {
     return result
   }
 
-  async guestShell(command, { user = "", captureOutput = true } = {}) {
+  async guestShell(command, { user = "", captureOutput = true, timeoutMs = 60000 } = {}) {
     const args = user ? ["-u", user, "--", "/bin/sh", "-lc", command] : ["-lc", command]
     const result = await this.execute({
       execute: "guest-exec",
@@ -265,7 +266,8 @@ class GuestAgent {
     })
     const pid = result?.pid
     if (!pid) return { exitcode: 1 }
-    for (let attempt = 0; attempt < 240; attempt += 1) {
+    const attempts = Math.max(1, Math.ceil(timeoutMs / 250))
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250))
       const status = await this.execute({ execute: "guest-exec-status", arguments: { pid } })
       if (status?.exited) {
@@ -879,6 +881,7 @@ class VmManager {
     this.guestAgentConnecting = null
     this.guestAgentConnectAttempts = 0
     this.guestIntegrationPromise = null
+    this.displayRecoveryPromise = null
     this.pendingLaunches = []
     this.vncProxyServer = null
     this.vncTcpPort = 0
@@ -1216,7 +1219,7 @@ class VmManager {
   startSerialDesktopFallback() {
     if (!this.process || !this.serial || this.serial.destroyed || this.desktopReady || this.guestAgent?.isConnected()) return
     this.serialDesktopFallbackAttempts += 1
-    const command = "if command -v x11vnc >/dev/null 2>&1 && ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1 && [ ! -e /tmp/worktoper-x11vnc-fallback.pending ]; then touch /tmp/worktoper-x11vnc-fallback.pending; nohup sh -lc 'trap \"rm -f /tmp/worktoper-x11vnc-fallback.pending\" EXIT; for attempt in $(seq 1 45); do [ -S /tmp/.X11-unix/X0 ] && break; sleep 1; done; [ -S /tmp/.X11-unix/X0 ] || exit 1; x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -clipboard -setclipboard -quiet -o /tmp/worktoper-x11vnc.log' >/tmp/worktoper-x11vnc-start.log 2>&1 & fi"
+    const command = `if command -v x11vnc >/dev/null 2>&1 && ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1 && [ ! -e /tmp/worktoper-x11vnc-fallback.pending ]; then touch /tmp/worktoper-x11vnc-fallback.pending; nohup sh -lc 'trap "rm -f /tmp/worktoper-x11vnc-fallback.pending" EXIT; for attempt in $(seq 1 45); do [ -S /tmp/.X11-unix/X0 ] && break; sleep 1; done; [ -S /tmp/.X11-unix/X0 ] || exit 1; ${X11VNC_COMMAND}' >/tmp/worktoper-x11vnc-start.log 2>&1 & fi`
     this.serial.write(`${command}\r`)
     if (this.serialDesktopFallbackAttempts < 24) {
       this.serialDesktopFallbackTimer = setTimeout(() => this.startSerialDesktopFallback(), 5000)
@@ -1229,6 +1232,7 @@ class VmManager {
     const agent = this.guestAgent
     const integration = (async () => {
       try {
+        await this.ensureDisplayAwake()
         const sharedDirectoryReady = await this.ensureSharedDirectory()
         if (!sharedDirectoryReady && this.sharedDirectory) return false
         this.resizeDesktop(1920, 1080)
@@ -1260,6 +1264,7 @@ class VmManager {
         if (status.exitcode === 0) {
           const vncReady = await this.ensureEmbeddedVnc()
           if (vncReady) {
+            await this.ensureDisplayAwake()
             await this.ensureSharedDirectory()
             this.markDesktopReady("lightdm / XFCE / x11vnc readiness check")
             return
@@ -1419,6 +1424,125 @@ class VmManager {
       return false
     }
     return true
+  }
+
+  displayAwakeGuestCommands() {
+    return [
+      "cat >/usr/local/bin/worktoper-keep-display-awake <<'WORKTOPER_KEEP_AWAKE'",
+      "#!/bin/sh",
+      "set -u",
+      "export DISPLAY=:0",
+      "export XDG_RUNTIME_DIR=/run/user/1000",
+      "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
+      "set_xfconf() {",
+      "  channel=$1",
+      "  property=$2",
+      "  type=$3",
+      "  value=$4",
+      "  xfconf-query -c \"$channel\" -p \"$property\" -s \"$value\" >/dev/null 2>&1 || xfconf-query -c \"$channel\" -p \"$property\" -n -t \"$type\" -s \"$value\" >/dev/null 2>&1 || true",
+      "}",
+      "apply_display_policy() {",
+      "  xset dpms force on >/dev/null 2>&1 || true",
+      "  xset s reset >/dev/null 2>&1 || true",
+      "  xset s 0 0 >/dev/null 2>&1 || true",
+      "  xset s off >/dev/null 2>&1 || true",
+      "  xset s noblank >/dev/null 2>&1 || true",
+      "  xset -dpms >/dev/null 2>&1 || true",
+      "  set_xfconf xfce4-power-manager /xfce4-power-manager/blank-on-ac int 0",
+      "  set_xfconf xfce4-power-manager /xfce4-power-manager/inactivity-on-ac int 0",
+      "  set_xfconf xfce4-power-manager /xfce4-power-manager/dpms-enabled bool false",
+      "  set_xfconf xfce4-power-manager /xfce4-power-manager/lock-screen-suspend-hibernate bool false",
+      "  set_xfconf xfce4-screensaver /saver/enabled bool false",
+      "  set_xfconf xfce4-screensaver /saver/idle-activation/enabled bool false",
+      "  set_xfconf xfce4-screensaver /lock/enabled bool false",
+      "  xfce4-screensaver-command --deactivate >/dev/null 2>&1 || true",
+      "  light-locker-command -d >/dev/null 2>&1 || true",
+      "}",
+      "if [ \"${1:-}\" = --once ]; then",
+      "  apply_display_policy",
+      "  exit 0",
+      "fi",
+      "pidfile=$XDG_RUNTIME_DIR/worktoper-keep-display-awake.pid",
+      "if [ -s \"$pidfile\" ]; then",
+      "  old_pid=$(cat \"$pidfile\" 2>/dev/null || true)",
+      "  [ -z \"$old_pid\" ] || ! kill -0 \"$old_pid\" >/dev/null 2>&1 || exit 0",
+      "fi",
+      "printf '%s\\n' \"$$\" >\"$pidfile\"",
+      "trap 'rm -f \"$pidfile\"' EXIT INT TERM",
+      "while :; do",
+      "  apply_display_policy",
+      "  sleep 45",
+      "done",
+      "WORKTOPER_KEEP_AWAKE",
+      "chmod 0755 /usr/local/bin/worktoper-keep-display-awake",
+      "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=WorkToper Keep Display Awake' 'Exec=/usr/local/bin/worktoper-keep-display-awake' 'OnlyShowIn=XFCE;' 'Terminal=false' 'X-GNOME-Autostart-enabled=true' > /home/worktoper/.config/autostart/worktoper-keep-display-awake.desktop",
+      "chown -R worktoper:worktoper /home/worktoper/.config/autostart",
+      "runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake --once'",
+      "nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake' >/tmp/worktoper-keep-display-awake.log 2>&1 &",
+    ]
+  }
+
+  async ensureDisplayAwake() {
+    if (!this.guestAgent) return false
+    const command = [
+      "set -u",
+      "install -d -m 0700 -o worktoper -g worktoper /run/user/1000",
+      "install -d -m 0700 -o worktoper -g worktoper /home/worktoper/.config/autostart",
+      ...this.displayAwakeGuestCommands(),
+    ].join("\n")
+    const status = await this.guestAgent.guestShell(command, { captureOutput: true })
+    const text = [status.stdout, status.stderr].filter(Boolean).join("\n").trim()
+    if (text && status.exitcode !== 0) this.send("worktoper:vm:boot", `\r\n[WorkToper] Display wake recovery\r\n${text}\r\n`)
+    return status.exitcode === 0
+  }
+
+  async waitForVncHandshake(timeoutMs = 10000) {
+    const startedAt = Date.now()
+    while (this.process && Date.now() - startedAt < timeoutMs) {
+      if (await hasVncHandshake(this.vncTcpPort, 800)) return true
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    return false
+  }
+
+  wakeDisplay(forceRestart = false) {
+    if (this.displayRecoveryPromise) return this.displayRecoveryPromise
+    this.displayRecoveryPromise = this.recoverDisplay(forceRestart).finally(() => {
+      this.displayRecoveryPromise = null
+    })
+    return this.displayRecoveryPromise
+  }
+
+  async recoverDisplay(forceRestart = false) {
+    if (!this.process) return { ok: false }
+    let recovered = false
+    if (this.guestAgent?.isConnected()) {
+      try {
+        await this.ensureDisplayAwake()
+        if (!forceRestart) return { ok: true }
+        if (forceRestart) {
+          recovered = await this.ensureEmbeddedVnc({ restart: true })
+          if (recovered) recovered = await this.waitForVncHandshake(8000)
+        }
+      } catch (error) {
+        this.send("worktoper:vm:boot", `\r\n[WorkToper] Display recovery through Guest Agent failed: ${error instanceof Error ? error.message : String(error)}\r\n`)
+        if (this.guestAgent && !this.guestAgent.isConnected()) {
+          const agent = this.guestAgent
+          this.guestAgent = null
+          agent.close()
+          this.connectGuestAgent(this.connection?.qgaSocketPath || "", this.qgaPort, 250)
+        }
+      }
+    }
+    if (!recovered && this.serial && !this.serial.destroyed && this.shellReady) {
+      const desktopEnvironment = "export DISPLAY=:0 XAUTHORITY=/home/worktoper/.Xauthority XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+      const restartVnc = forceRestart ? `pkill -x x11vnc >/dev/null 2>&1 || true; for attempt in $(seq 1 20); do ! pgrep -x x11vnc >/dev/null 2>&1 && break; sleep 0.1; done; pgrep -x x11vnc >/dev/null 2>&1 && pkill -KILL -x x11vnc >/dev/null 2>&1 || true; nohup ${X11VNC_COMMAND} >/tmp/worktoper-x11vnc-start.log 2>&1 &` : ""
+      this.write(`runuser -u worktoper -- sh -lc '${desktopEnvironment}; xset dpms force on >/dev/null 2>&1 || true; xset s reset >/dev/null 2>&1 || true; xset -dpms >/dev/null 2>&1 || true'; ${restartVnc}\r`)
+      if (!forceRestart) return { ok: true }
+      recovered = await this.waitForVncHandshake(10000)
+    }
+    return { ok: recovered }
   }
 
   async ensureDesktopSession() {
@@ -1631,22 +1755,7 @@ class VmManager {
       "WORKTOPER_TRUST_DESKTOP",
       "chmod 0755 /usr/local/bin/worktoper-trust-desktop-launchers",
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=WorkToper Desktop Trust' 'Exec=/usr/local/bin/worktoper-trust-desktop-launchers' 'OnlyShowIn=XFCE;' 'Terminal=false' 'X-GNOME-Autostart-enabled=true' > /home/worktoper/.config/autostart/worktoper-desktop-trust.desktop",
-      "cat >/usr/local/bin/worktoper-keep-display-awake <<'WORKTOPER_KEEP_AWAKE'",
-      "#!/bin/sh",
-      "export DISPLAY=:0",
-      "export XDG_RUNTIME_DIR=/run/user/1000",
-      "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-      "[ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority",
-      "xset s off >/dev/null 2>&1 || true",
-      "xset s noblank >/dev/null 2>&1 || true",
-      "xset -dpms >/dev/null 2>&1 || true",
-      "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 >/dev/null 2>&1 || true",
-      "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false >/dev/null 2>&1 || true",
-      "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false >/dev/null 2>&1 || true",
-      "WORKTOPER_KEEP_AWAKE",
-      "chmod 0755 /usr/local/bin/worktoper-keep-display-awake",
-      "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=WorkToper Keep Display Awake' 'Exec=/usr/local/bin/worktoper-keep-display-awake' 'OnlyShowIn=XFCE;' 'Terminal=false' 'X-GNOME-Autostart-enabled=true' > /home/worktoper/.config/autostart/worktoper-keep-display-awake.desktop",
-      "nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake' >/tmp/worktoper-keep-display-awake.log 2>&1 &",
+      ...this.displayAwakeGuestCommands(),
       "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=WorkToper Layan Theme' 'Exec=/usr/local/bin/worktoper-apply-layan-theme' 'OnlyShowIn=XFCE;' 'Terminal=false' 'X-GNOME-Autostart-enabled=true' > /home/worktoper/.config/autostart/worktoper-layan-theme.desktop",
       "if find /usr/share/themes -maxdepth 1 -type d -name 'Layan*' | grep -q .; then",
       "  nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-apply-layan-theme' >/tmp/worktoper-apply-layan-theme.log 2>&1 &",
@@ -1672,7 +1781,7 @@ class VmManager {
     if (text) this.send("worktoper:vm:boot", `${text}\r\n`)
   }
 
-  async ensureEmbeddedVnc() {
+  async ensureEmbeddedVnc({ restart = false } = {}) {
     if (!this.guestAgent || !this.vncTcpPort) return false
     const command = [
       "set -u",
@@ -1680,10 +1789,18 @@ class VmManager {
       "  echo '$ x11vnc missing from VM image'",
       "  exit 1",
       "fi",
+      ...(restart ? [
+        "pkill -x x11vnc >/dev/null 2>&1 || true",
+        "for attempt in $(seq 1 20); do",
+        "  ! pgrep -x x11vnc >/dev/null 2>&1 && break",
+        "  sleep 0.1",
+        "done",
+        "if pgrep -x x11vnc >/dev/null 2>&1; then pkill -KILL -x x11vnc >/dev/null 2>&1 || true; sleep 0.2; fi",
+      ] : [":"]),
       "if ! pgrep -a -x x11vnc | grep -F -- '-rfbport 5900' >/dev/null 2>&1; then",
       "  echo '$ x11vnc -display :0 -rfbport 5900'",
       "  pkill -x x11vnc >/dev/null 2>&1 || true",
-      "  nohup x11vnc -display :0 -auth /var/run/lightdm/root/:0 -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -cursor arrow -clipboard -setclipboard -quiet -o /tmp/worktoper-x11vnc.log >/tmp/worktoper-x11vnc-start.log 2>&1 &",
+      `  nohup ${X11VNC_COMMAND} >/tmp/worktoper-x11vnc-start.log 2>&1 &`,
       "fi",
       "sleep 1",
       "vnc_ready=0",

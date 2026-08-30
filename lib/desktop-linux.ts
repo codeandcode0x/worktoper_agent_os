@@ -54,6 +54,7 @@ declare global {
       getWindowFullscreen: () => Promise<{ fullscreen: boolean }>
       exitWindowFullscreen: () => Promise<{ ok: boolean }>
       lock: () => Promise<{ ok: boolean }>
+      wakeDisplay: (forceRestart?: boolean) => Promise<{ ok: boolean }>
       readClipboardText: () => Promise<{ text: string }>
       writeClipboardText: (text: string) => Promise<{ ok: boolean }>
       restartApp: () => Promise<{ ok: boolean }>
@@ -63,6 +64,7 @@ declare global {
       onBoot: (callback: (data: string) => void) => () => void
       onTerminal: (callback: (data: string) => void) => () => void
       onWindowFullscreenChange: (callback: (fullscreen: boolean) => void) => () => void
+      onSystemPower: (callback: (event: "lock" | "resume") => void) => () => void
     }
   }
 }
@@ -236,6 +238,11 @@ class DesktopLinuxRuntime {
     return unsubscribe
   }
 
+  subscribeSystemPower(listener: (event: "lock" | "resume") => void) {
+    if (!window.worktoperVM?.onSystemPower) return () => undefined
+    return window.worktoperVM.onSystemPower(listener)
+  }
+
   async exitWindowFullscreen() {
     if (!window.worktoperVM) return
     await window.worktoperVM.exitWindowFullscreen()
@@ -244,6 +251,11 @@ class DesktopLinuxRuntime {
   async lock() {
     if (!window.worktoperVM) throw new Error("WorkToper VM bridge is unavailable")
     return window.worktoperVM.lock()
+  }
+
+  async wakeDisplay(forceRestart = false) {
+    if (!window.worktoperVM?.wakeDisplay) return { ok: false }
+    return window.worktoperVM.wakeDisplay(forceRestart)
   }
 
   async readClipboardText() {

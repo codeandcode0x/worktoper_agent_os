@@ -595,16 +595,50 @@ write_files:
     permissions: "0755"
     content: |
       #!/bin/sh
+      set -u
       export DISPLAY=:0
       export XDG_RUNTIME_DIR=/run/user/1000
       export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
       [ -f /home/worktoper/.Xauthority ] && export XAUTHORITY=/home/worktoper/.Xauthority
-      xset s off >/dev/null 2>&1 || true
-      xset s noblank >/dev/null 2>&1 || true
-      xset -dpms >/dev/null 2>&1 || true
-      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 >/dev/null 2>&1 || true
-      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false >/dev/null 2>&1 || true
-      xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false >/dev/null 2>&1 || true
+      set_xfconf() {
+        channel=$1
+        property=$2
+        type=$3
+        value=$4
+        xfconf-query -c "$channel" -p "$property" -s "$value" >/dev/null 2>&1 || xfconf-query -c "$channel" -p "$property" -n -t "$type" -s "$value" >/dev/null 2>&1 || true
+      }
+      apply_display_policy() {
+        xset dpms force on >/dev/null 2>&1 || true
+        xset s reset >/dev/null 2>&1 || true
+        xset s 0 0 >/dev/null 2>&1 || true
+        xset s off >/dev/null 2>&1 || true
+        xset s noblank >/dev/null 2>&1 || true
+        xset -dpms >/dev/null 2>&1 || true
+        set_xfconf xfce4-power-manager /xfce4-power-manager/blank-on-ac int 0
+        set_xfconf xfce4-power-manager /xfce4-power-manager/inactivity-on-ac int 0
+        set_xfconf xfce4-power-manager /xfce4-power-manager/dpms-enabled bool false
+        set_xfconf xfce4-power-manager /xfce4-power-manager/lock-screen-suspend-hibernate bool false
+        set_xfconf xfce4-screensaver /saver/enabled bool false
+        set_xfconf xfce4-screensaver /saver/idle-activation/enabled bool false
+        set_xfconf xfce4-screensaver /lock/enabled bool false
+        xfce4-screensaver-command --deactivate >/dev/null 2>&1 || true
+        light-locker-command -d >/dev/null 2>&1 || true
+      }
+      if [ "\${1:-}" = --once ]; then
+        apply_display_policy
+        exit 0
+      fi
+      pidfile=$XDG_RUNTIME_DIR/worktoper-keep-display-awake.pid
+      if [ -s "$pidfile" ]; then
+        old_pid=$(cat "$pidfile" 2>/dev/null || true)
+        [ -z "$old_pid" ] || ! kill -0 "$old_pid" >/dev/null 2>&1 || exit 0
+      fi
+      printf '%s\n' "$$" >"$pidfile"
+      trap 'rm -f "$pidfile"' EXIT INT TERM
+      while :; do
+        apply_display_policy
+        sleep 45
+      done
   - path: /home/worktoper/.config/autostart/worktoper-keep-display-awake.desktop
     permissions: "0644"
     content: |
@@ -686,7 +720,8 @@ runcmd:
   - chmod +x /home/worktoper/Desktop/*.desktop || true
   - chown -R worktoper:worktoper /home/worktoper
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-trust-desktop-launchers'
-  - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake'
+  - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake --once'
+  - nohup runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-keep-display-awake' >/tmp/worktoper-keep-display-awake.log 2>&1 &
   - /usr/local/sbin/worktoper-install-backgrounds || true
   - /usr/local/sbin/worktoper-install-layan-theme || true
   - runuser -u worktoper -- sh -lc '/usr/local/bin/worktoper-apply-layan-theme' || true

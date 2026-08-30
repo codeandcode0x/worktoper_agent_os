@@ -1,7 +1,7 @@
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, shell } = require("electron")
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, screen, shell } = require("electron")
 const { createStaticServer } = require("./static-server.cjs")
 const { VmManager } = require("./vm-manager.cjs")
 
@@ -15,6 +15,7 @@ let appOrigin = ""
 let vmManager = null
 let resizingToAspect = false
 let syncingAgentRobotWindow = false
+let lastSystemRecoveryAt = 0
 
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json")
@@ -430,6 +431,11 @@ ipcMain.handle("worktoper:vm:lock", () => {
   return vmManager.lock()
 })
 
+ipcMain.handle("worktoper:vm:wake-display", (_event, forceRestart = false) => {
+  if (!vmManager) return { ok: false }
+  return vmManager.wakeDisplay(Boolean(forceRestart))
+})
+
 ipcMain.handle("worktoper:clipboard:read-text", () => ({ text: clipboard.readText() || "" }))
 
 ipcMain.handle("worktoper:clipboard:write-text", (_event, text) => {
@@ -451,6 +457,17 @@ ipcMain.handle("worktoper:app:close", () => {
 
 app.whenReady().then(() => {
   installApplicationMenu()
+  const notifySystemLock = () => mainWindow?.webContents.send("worktoper:system:power", "lock")
+  const notifySystemRecovery = () => {
+    const now = Date.now()
+    if (now - lastSystemRecoveryAt < 1000) return
+    lastSystemRecoveryAt = now
+    mainWindow?.webContents.send("worktoper:system:power", "resume")
+  }
+  powerMonitor.on("lock-screen", notifySystemLock)
+  powerMonitor.on("suspend", notifySystemLock)
+  powerMonitor.on("unlock-screen", notifySystemRecovery)
+  powerMonitor.on("resume", notifySystemRecovery)
   return createWindow()
 }).catch((error) => {
   dialog.showErrorBox("WorkToper Agent OS failed to start", error instanceof Error ? error.stack || error.message : String(error))

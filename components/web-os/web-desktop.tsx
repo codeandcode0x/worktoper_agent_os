@@ -256,19 +256,53 @@ type RfbHandle = {
 
 type RfbClipboardEvent = Event & { detail?: { text?: string }; text?: string }
 
-function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: RuntimeSnapshot; onConnectedChange?: (connected: boolean, error?: string) => void }) {
+function EmbeddedDesktopSurface({ runtime, locked, recoveryToken, onConnectedChange }: { runtime: RuntimeSnapshot; locked: boolean; recoveryToken: number; onConnectedChange?: (connected: boolean, error?: string) => void }) {
   const { t } = useCopy()
   const hostRef = useRef<HTMLDivElement>(null)
   const rfbRef = useRef<RfbHandle | null>(null)
+  const lockedRef = useRef(locked)
+  const previousLockedRef = useRef(locked)
+  const recoveryAttemptRef = useRef(0)
   const lastResizeRef = useRef("")
   const lastHostClipboardRef = useRef("")
   const lastRemoteClipboardRef = useRef("")
   const clipboardSyncRef = useRef<Promise<void> | null>(null)
   const [connection, setConnection] = useState<VmConnection | null>(() => desktopLinux.getConnection())
   const [connected, setConnected] = useState(false)
+  const [displayReady, setDisplayReady] = useState(false)
   const [error, setError] = useState("")
   const [retryTick, setRetryTick] = useState(0)
+  const [desktopPreview, setDesktopPreview] = useState("")
+  lockedRef.current = locked
+  const captureDesktopPreview = () => {
+    const canvas = hostRef.current?.querySelector("canvas")
+    if (!canvas) return
+    try {
+      setDesktopPreview(canvas.toDataURL("image/jpeg", 0.86))
+    } catch {}
+  }
+  const desktopCanvasLooksBlack = () => {
+    const canvas = hostRef.current?.querySelector("canvas")
+    if (!canvas?.width || !canvas.height) return true
+    const context = canvas.getContext("2d", { willReadFrequently: true })
+    if (!context) return false
+    try {
+      let visibleSamples = 0
+      for (let row = 1; row <= 4; row += 1) {
+        for (let column = 1; column <= 6; column += 1) {
+          const x = Math.floor(canvas.width * column / 7)
+          const y = Math.floor(canvas.height * row / 5)
+          const pixel = context.getImageData(x, y, 1, 1).data
+          if (Math.max(pixel[0], pixel[1], pixel[2]) > 18) visibleSamples += 1
+        }
+      }
+      return visibleSamples <= 1
+    } catch {
+      return false
+    }
+  }
   const focusDesktop = () => {
+    if (lockedRef.current) return
     hostRef.current?.focus({ preventScroll: true })
     rfbRef.current?.focus?.({ preventScroll: true })
   }
@@ -317,25 +351,33 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
     if (!hostRef.current || !vncWebSocketUrl || rfbRef.current) return
     let disposed = false
     let retryTimer: number | undefined
+    let revealTimer: number | undefined
     void (async () => {
       try {
         const { default: RFB } = await import("@novnc/novnc")
         if (!hostRef.current || disposed) return
         const rfb = new RFB(hostRef.current, vncWebSocketUrl, { shared: true }) as RfbHandle
-        rfb.viewOnly = false
+        rfb.viewOnly = lockedRef.current
         rfb.background = "#000000"
         rfb.scaleViewport = true
         rfb.resizeSession = false
         rfb.clipViewport = false
         rfb.dragViewport = false
-        rfb.focusOnClick = true
+        rfb.focusOnClick = !lockedRef.current
         rfb.showDotCursor = true
         rfb.qualityLevel = 7
         rfb.compressionLevel = 2
         rfb.addEventListener?.("connect", () => {
+          if (disposed) {
+            rfb.disconnect()
+            return
+          }
+          rfb.viewOnly = lockedRef.current
+          rfb.focusOnClick = !lockedRef.current
           setConnected(true)
           onConnectedChange?.(true)
           setError("")
+          if (lockedRef.current) return
           const refreshDesktop = () => {
             window.dispatchEvent(new Event("resize"))
             focusDesktop()
@@ -344,8 +386,14 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
           window.setTimeout(refreshDesktop, 250)
           window.setTimeout(refreshDesktop, 1000)
           window.setTimeout(() => void syncClipboardToRemote(), 350)
+          revealTimer = window.setTimeout(() => {
+            if (lockedRef.current || rfbRef.current !== rfb) return
+            setDisplayReady(true)
+            setDesktopPreview("")
+          }, 500)
         })
         rfb.addEventListener?.("clipboard", (event?: Event) => {
+          if (lockedRef.current) return
           const clipboardEvent = event as RfbClipboardEvent | undefined
           const text = clipboardEvent?.detail?.text ?? clipboardEvent?.text ?? ""
           if (!text || text === lastRemoteClipboardRef.current) return
@@ -354,10 +402,12 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
           void desktopLinux.writeClipboardText(text)
         })
         rfb.addEventListener?.("disconnect", () => {
+          if (rfbRef.current !== rfb) return
           rfbRef.current = null
           setConnected(false)
+          setDisplayReady(false)
           onConnectedChange?.(false)
-          if (!disposed && runtime.phase !== "idle" && runtime.phase !== "error") retryTimer = window.setTimeout(() => setRetryTick((value) => value + 1), 900)
+          if (!disposed && !lockedRef.current && runtime.phase !== "idle" && runtime.phase !== "error") retryTimer = window.setTimeout(() => setRetryTick((value) => value + 1), 900)
         })
         rfb.addEventListener?.("securityfailure", () => {
           const message = t("Linux desktop display security handshake failed", "Linux 桌面显示安全握手失败")
@@ -376,12 +426,42 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
     return () => {
       disposed = true
       if (retryTimer) window.clearTimeout(retryTimer)
+      if (revealTimer) window.clearTimeout(revealTimer)
       setConnected(false)
+      setDisplayReady(false)
       onConnectedChange?.(false)
       rfbRef.current?.disconnect()
       rfbRef.current = null
     }
   }, [vncWebSocketUrl, retryTick])
+
+  useEffect(() => {
+    const wasLocked = previousLockedRef.current
+    previousLockedRef.current = locked
+    const rfb = rfbRef.current
+    if (locked) {
+      captureDesktopPreview()
+      if (!rfb) return
+      rfb.focusOnClick = false
+      rfb.viewOnly = true
+      hostRef.current?.blur()
+      return
+    }
+    if (!wasLocked) return
+    if (!rfb) {
+      setRetryTick((value) => value + 1)
+      return
+    }
+    rfb.viewOnly = false
+    rfb.focusOnClick = true
+    window.requestAnimationFrame(focusDesktop)
+    const revealTimer = window.setTimeout(() => {
+      if (lockedRef.current || rfbRef.current !== rfb) return
+      setDisplayReady(true)
+      setDesktopPreview("")
+    }, 500)
+    return () => window.clearTimeout(revealTimer)
+  }, [locked])
 
   useEffect(() => {
     if (!hostRef.current) return
@@ -408,7 +488,7 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
   }, [connected, runtime.phase])
 
   useEffect(() => {
-    if (!connected || runtime.phase !== "ready") return
+    if (locked || !connected || runtime.phase !== "ready") return
     const keepAlive = window.setInterval(() => {
       window.dispatchEvent(new Event("resize"))
       void desktopLinux.resizeDesktop(1920, 1080)
@@ -416,10 +496,10 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
       void syncClipboardToRemote()
     }, 30_000)
     return () => window.clearInterval(keepAlive)
-  }, [connected, runtime.phase])
+  }, [connected, runtime.phase, locked])
 
   useEffect(() => {
-    if (runtime.phase !== "ready") return
+    if (locked || runtime.phase !== "ready") return
     const refreshDesktop = () => {
       window.dispatchEvent(new Event("resize"))
       rfbRef.current?.focus?.({ preventScroll: true })
@@ -430,10 +510,42 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
       window.setTimeout(refreshDesktop, 1200),
     ]
     return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [runtime.phase])
+  }, [runtime.phase, locked])
 
   useEffect(() => {
-    if (!connected || runtime.phase !== "ready") return
+    const recoveryAttempt = ++recoveryAttemptRef.current
+    if (locked || runtime.phase !== "ready" || recoveryToken === 0) return
+    let reconnectTimer: number | undefined
+    let displayCheckTimer: number | undefined
+    const blackFrame = Boolean(rfbRef.current && desktopCanvasLooksBlack())
+    const forceRestart = !rfbRef.current || blackFrame
+    if (blackFrame) setDisplayReady(false)
+    void desktopLinux.wakeDisplay(forceRestart).catch(() => ({ ok: false })).then(() => {
+      if (recoveryAttemptRef.current !== recoveryAttempt || lockedRef.current) return
+      if (!rfbRef.current) {
+        setConnected(false)
+        onConnectedChange?.(false)
+        reconnectTimer = window.setTimeout(() => {
+          setRetryTick((value) => value + 1)
+        }, 300)
+        return
+      }
+      if (forceRestart) return
+      displayCheckTimer = window.setTimeout(() => {
+        if (recoveryAttemptRef.current !== recoveryAttempt || lockedRef.current || !desktopCanvasLooksBlack()) return
+        captureDesktopPreview()
+        void desktopLinux.wakeDisplay(true)
+      }, 700)
+    })
+    return () => {
+      if (recoveryAttemptRef.current === recoveryAttempt) recoveryAttemptRef.current += 1
+      if (reconnectTimer) window.clearTimeout(reconnectTimer)
+      if (displayCheckTimer) window.clearTimeout(displayCheckTimer)
+    }
+  }, [runtime.phase, locked, recoveryToken])
+
+  useEffect(() => {
+    if (locked || !connected || runtime.phase !== "ready") return
     const sync = () => void syncClipboardToRemote()
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
@@ -456,12 +568,14 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
       window.removeEventListener("keydown", onKeyDown, true)
       window.clearInterval(timer)
     }
-  }, [connected, runtime.phase])
+  }, [connected, runtime.phase, locked])
 
   const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
     event.preventDefault()
     sendClipboardToRemote(event.clipboardData.getData("text/plain"))
   }
+
+  const restoringDesktop = !locked && recoveryToken > 0 && !displayReady
 
   return <section className="embedded-desktop-surface" aria-label={t("Linux graphical desktop", "Linux 图形桌面")}>
     <div
@@ -476,6 +590,10 @@ function EmbeddedDesktopSurface({ runtime, onConnectedChange }: { runtime: Runti
       onPaste={handlePaste}
       onContextMenu={(event) => event.preventDefault()}
     />
+    {restoringDesktop && <div className="desktop-recovery" role="status" aria-live="polite">
+      {desktopPreview && <img src={desktopPreview} alt="" />}
+      <div className="desktop-recovery-status"><RefreshCw /><strong>{t("Restoring desktop", "正在恢复桌面")}</strong><span>{t("Reconnecting to your Linux session…", "正在重新连接 Linux 会话…")}</span></div>
+    </div>}
     {error && !connected && <div className="desktop-connect-error" aria-live="polite"><AppWindow /><strong>{error}</strong><span>{runtime.detail}</span></div>}
   </section>
 }
@@ -671,11 +789,11 @@ function AppLockOverlay({ password, onUnlock }: { password: string; onUnlock: ()
     setFormVisible(true)
     window.setTimeout(() => inputRef.current?.focus(), 50)
   }
-  return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label={t("Lock screen", "锁屏")}>
+  return <div className="app-lock-overlay" role="dialog" aria-modal="true" aria-label={t("Lock screen", "锁屏")} onKeyDownCapture={(event) => event.stopPropagation()} onKeyUpCapture={(event) => event.stopPropagation()}>
     <div className="app-lock-clock" aria-label={t("Current time", "当前时间")}><strong><span>{hourMinuteText}</span><small>:{secondText}</small></strong><span className="app-lock-date">{dateText}</span></div>
     {!formVisible && <button className="app-lock-primary" onClick={showForm} aria-label={t("Unlock", "解锁")} title={t("Unlock", "解锁")}><LockKeyhole /></button>}
     {formVisible && <form className="app-lock-form" onSubmit={(event) => { event.preventDefault(); unlock() }}>
-      <input ref={inputRef} type="password" value={value} onChange={(event) => { setValue(event.target.value); setMessage("") }} placeholder={t("Enter password", "输入密码")} />
+      <input ref={inputRef} type="password" autoFocus value={value} onChange={(event) => { setValue(event.target.value); setMessage("") }} placeholder={t("Enter password", "输入密码")} />
       <button type="submit">{t("Unlock", "解锁")}</button>
       <span>{message || t("Default password: worktoper", "默认密码：worktoper")}</span>
     </form>}
@@ -689,6 +807,7 @@ export function WebDesktop() {
   const [desktopConnected, setDesktopConnected] = useState(false)
   const [desktopConnectionError, setDesktopConnectionError] = useState("")
   const [lockPassword, setLockPassword] = useState("")
+  const [displayRecoveryToken, setDisplayRecoveryToken] = useState(0)
   const activityTimerRef = useRef<number | undefined>(undefined)
   const runtime = useRuntime()
   const lockWithStoredPassword = async () => {
@@ -703,6 +822,13 @@ export function WebDesktop() {
     void desktopLinux.getSettings().then((settings) => setLanguage(settings.language)).catch(() => undefined)
     void desktopLinux.boot().catch(() => undefined)
   }, [])
+  useEffect(() => desktopLinux.subscribeSystemPower((event) => {
+    if (event === "lock") {
+      void lockWithStoredPassword()
+      return
+    }
+    setDisplayRecoveryToken((value) => value + 1)
+  }), [])
   useEffect(() => {
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en"
   }, [language])
@@ -765,6 +891,8 @@ export function WebDesktop() {
     <section className="desktop" aria-label={language === "zh" ? "WorkToper Agent OS 桌面" : "WorkToper Agent OS desktop"}>
       <EmbeddedDesktopSurface
         runtime={runtime}
+        locked={Boolean(lockPassword)}
+        recoveryToken={displayRecoveryToken}
         onConnectedChange={(nextConnected, nextError) => {
           setDesktopConnected(nextConnected)
           setDesktopConnectionError(nextError || "")
@@ -781,7 +909,7 @@ export function WebDesktop() {
       </div><SystemOverview openApp={launchApp} runtime={runtime} /></div>
     </section>
     {embeddedReady && <DesktopControlOverlay runtime={runtime} locked={Boolean(lockPassword)} onLock={(password) => setLockPassword(password || fallbackSettings.lockPassword)} onLanguageChange={setLanguage} />}
-    {lockPassword && <AppLockOverlay password={lockPassword} onUnlock={() => setLockPassword("")} />}
+    {lockPassword && <AppLockOverlay password={lockPassword} onUnlock={() => { setLockPassword(""); setDisplayRecoveryToken((value) => value + 1) }} />}
     {bootOverlayVisible && <BootScreen runtime={runtime} error={runtime.phase === "error" ? runtime.detail : desktopConnectionError} fullscreen />}
     <Dock windows={windows} openApp={launchApp} />
   </main></LanguageContext.Provider>
