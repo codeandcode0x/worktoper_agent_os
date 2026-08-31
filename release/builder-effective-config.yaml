@@ -18,6 +18,7 @@ electronLanguages:
   - zh-CN
   - zh_CN
 npmRebuild: false
+afterPack: scripts/after-pack.cjs
 extraResources:
   - from: images/bg
     to: images/bg

@@ -16,11 +16,12 @@
     "build": "next build",
     "start": "node desktop/static-server.cjs out",
     "desktop:dev": "next build && electron .",
-    "desktop:pack": "next build && electron-builder --dir --x64 -c.electronDist=runtime/electron",
-    "dist": "next build && electron-builder --x64 -c.electronDist=runtime/electron",
-    "dist:mac": "next build && electron-builder --mac --x64 -c.electronDist=runtime/electron",
-    "dist:win": "next build && electron-builder --win --x64 -c.electronDist=runtime/electron",
-    "dist:linux": "next build && electron-builder --linux --x64 -c.electronDist=runtime/electron",
+    "desktop:pack": "node scripts/verify-runtime.mjs && next build && electron-builder --dir --x64 -c.electronDist=runtime/electron",
+    "dist": "node scripts/verify-runtime.mjs && next build && electron-builder --x64 -c.electronDist=runtime/electron",
+    "dist:mac": "node scripts/verify-runtime.mjs darwin && next build && electron-builder --mac --x64 -c.electronDist=runtime/electron",
+    "dist:win": "node scripts/verify-runtime.mjs win32 && next build && electron-builder --win --x64 -c.electronDist=runtime/electron",
+    "dist:linux": "node scripts/verify-runtime.mjs linux && next build && electron-builder --linux --x64 -c.electronDist=runtime/electron",
+    "runtime:verify": "node scripts/verify-runtime.mjs",
     "vm:prepare": "node scripts/prepare-vm.mjs",
     "lint": "eslint ."
   },
@@ -79,6 +80,7 @@
       "zh_CN"
     ],
     "npmRebuild": false,
+    "afterPack": "scripts/after-pack.cjs",
     "extraResources": [
       {
         "from": "images/bg",

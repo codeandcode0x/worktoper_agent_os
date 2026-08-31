@@ -16,6 +16,8 @@ WorkToper Agent OS 把 AI Agent、Linux 环境和日常开发工具放进同一�
 
 它适合那些希望拥有真实 Linux 能力、又不想切换宿主机或维护复杂远程环境的人：开箱即用，保持隔离，并且可以持续保存自己的工作空间。
 
+发行包已经包含目标平台所需的 QEMU、固件、动态库和镜像解压工具。最终用户无需安装 QEMU、tar 或其他宿主机运行时依赖；首次打开应用时会自动下载并安装 Linux VM 镜像。
+
 ### 你可以用它做什么
 
 - 在 macOS、Windows 或 Linux 上使用独立的 Debian 工作空间。
@@ -45,7 +47,7 @@ Electron → QEMU → Debian Linux VM
 
 ### 快速开始
 
-环境要求：Node.js 20+、Corepack、pnpm 10.15.0，以及 macOS 14+、Windows x64 或 Linux x64。
+以下要求只用于从源码开发：Node.js 20+、Corepack、pnpm 10.15.0，以及 macOS x64、Windows x64 或 Linux x64。安装发行包的最终用户无需安装这些开发依赖。
 
 ```bash
 corepack enable
@@ -70,6 +72,8 @@ pnpm dist:linux
 ```
 
 Linux 产物为 AppImage 和 deb；macOS 产物为 DMG 和 ZIP；Windows 产物为 NSIS 安装包和 portable 包。正式发布 macOS 应用时还需要签名和 notarization。
+
+构建会在打包前和产物生成后校验内置 QEMU、固件、运行库与解压工具；任何目标平台运行时缺失都会直接终止构建。
 
 ### 项目结构
 

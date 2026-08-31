@@ -14,6 +14,8 @@ WorkToper Agent OS brings your AI Agent, a real Linux environment, and everyday 
 
 It is designed for people who want real Linux capabilities without switching hosts or maintaining a complicated remote setup: isolated, persistent, and ready for daily work.
 
+Release packages include QEMU, firmware, runtime libraries, and the VM archive tool for their target platform. End users do not install QEMU, tar, or other host runtime dependencies; the application downloads and installs the Linux VM image automatically on first launch.
+
 ### What you can do
 
 - Use an isolated Debian workspace on macOS, Windows, or Linux.
@@ -43,7 +45,7 @@ Electron → QEMU → Debian Linux VM
 
 ### Quick start
 
-Requirements: Node.js 20+, Corepack, pnpm 10.15.0, and macOS 14+, Windows x64, or Linux x64.
+The following requirements apply only to source development: Node.js 20+, Corepack, pnpm 10.15.0, and macOS x64, Windows x64, or Linux x64. End users installing a release package do not need these development dependencies.
 
 ```bash
 corepack enable
@@ -68,6 +70,8 @@ pnpm dist:linux
 ```
 
 Linux builds produce AppImage and deb packages; macOS produces DMG and ZIP; Windows produces NSIS and portable packages. macOS distribution additionally requires signing and notarization.
+
+Packaging validates the bundled QEMU executable, firmware, runtime libraries, and archive tool both before packaging and in the unpacked application. A missing target runtime stops the build.
 
 ### Project structure
 

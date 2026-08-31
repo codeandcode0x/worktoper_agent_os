@@ -307,11 +307,13 @@ function runtimeExecutableCandidates(app, group, command) {
 }
 
 function toolCandidates(app, commands, envVar = "") {
-  const envCandidate = envVar ? process.env[envVar] : ""
   const commandList = Array.isArray(commands) ? commands : [commands]
+  const bundledCandidates = commandList.flatMap((command) => runtimeExecutableCandidates(app, "tools", command))
+  if (app.isPackaged) return bundledCandidates
+  const envCandidate = envVar ? process.env[envVar] : ""
   return [
     envCandidate,
-    ...commandList.flatMap((command) => runtimeExecutableCandidates(app, "tools", command)),
+    ...bundledCandidates,
     ...commandList.map((command) => commandExists(executableName(command))),
     ...commandList.map((command) => commandExists(command)),
   ].filter(Boolean)
@@ -328,9 +330,11 @@ function getQemuName(arch = "x64") {
 
 function qemuCandidates(app, arch = "x64") {
   const qemuName = getQemuName(arch)
+  const bundledCandidates = runtimeExecutableCandidates(app, "qemu", qemuName)
+  if (app.isPackaged) return bundledCandidates
   return [
     process.env.WORKTOPER_QEMU,
-    ...runtimeExecutableCandidates(app, "qemu", qemuName),
+    ...bundledCandidates,
     ...platformExecutableCandidates(qemuName),
     commandExists(qemuName),
   ].filter(Boolean)
@@ -472,7 +476,7 @@ function extractVmArchive(app, archive, targetDirectory, onLog) {
   const tar = resolveToolBinary(app, ["tar", "bsdtar"], "WORKTOPER_TAR")
   if (!tar) {
     const searched = toolCandidates(app, ["tar", "bsdtar"], "WORKTOPER_TAR").join(", ")
-    throw new Error(`VM image extraction failed: tar/bsdtar was not found. Add it to runtime/tools/${process.platform}/ or install the system tar utility. Searched: ${searched || "none"}`)
+    throw new Error(`The bundled VM archive tool is missing or not executable. Reinstall the complete WorkToper Agent OS package. Searched: ${searched || "none"}`)
   }
   onLog?.(`[WorkToper] Archive tool: ${tar}`)
   const result = spawnSync(tar, ["-xJf", archive, "-C", targetDirectory], { encoding: "utf8" })
