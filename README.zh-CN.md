@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="images/icons/icon.svg" alt="WorkToper Agent OS 应用图标" width="128" height="128">
   <h1>WorkToper Agent OS</h1>
   <p><strong>Work With AI Agent</strong></p>
   <p>把 AI Agent 带进一个真正可操作的 Linux 智能桌面。<br>开发、自动化与系统能力，在一个窗口里自然协作。</p>

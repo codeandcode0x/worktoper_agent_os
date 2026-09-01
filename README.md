@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="images/icons/icon.svg" alt="WorkToper Agent OS icon" width="128" height="128">
   <h1>WorkToper Agent OS</h1>
   <p><strong>Work With AI Agent</strong></p>
   <p>Bring your AI Agent into a real, interactive Linux workspace.<br>Build, automate, and get things done in one desktop.</p>
