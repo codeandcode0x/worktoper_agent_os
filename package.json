@@ -18,9 +18,12 @@
     "desktop:dev": "next build && electron .",
     "desktop:pack": "node scripts/verify-runtime.mjs && next build && electron-builder --dir --x64 -c.electronDist=runtime/electron",
     "dist": "node scripts/verify-runtime.mjs && next build && electron-builder --x64 -c.electronDist=runtime/electron",
-    "dist:mac": "node scripts/verify-runtime.mjs darwin && next build && electron-builder --mac --x64 -c.electronDist=runtime/electron",
-    "dist:win": "node scripts/verify-runtime.mjs win32 && next build && electron-builder --win --x64 -c.electronDist=runtime/electron",
-    "dist:linux": "node scripts/verify-runtime.mjs linux && next build && electron-builder --linux --x64 -c.electronDist=runtime/electron",
+    "build:mac": "node scripts/verify-runtime.mjs darwin && next build && electron-builder --mac --x64 -c.electronDist=runtime/electron",
+    "build:win": "node scripts/verify-runtime.mjs win32 && next build && electron-builder --win --x64 -c.electronDist=runtime/electron",
+    "build:linux": "node scripts/verify-runtime.mjs linux && next build && electron-builder --linux --x64 -c.electronDist=runtime/electron",
+    "dist:mac": "npm run build:mac",
+    "dist:win": "npm run build:win",
+    "dist:linux": "npm run build:linux",
     "runtime:verify": "node scripts/verify-runtime.mjs",
     "vm:prepare": "node scripts/prepare-vm.mjs",
     "lint": "eslint ."
@@ -74,6 +77,9 @@
     ],
     "icon": "images/icons/icon.png",
     "compression": "maximum",
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "electronLanguages": [
       "en-US",
       "zh-CN",
@@ -124,9 +130,17 @@
         }
       ],
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "WorkToper Agent OS",
+      "installerIcon": "images/icons/icon.ico",
+      "uninstallerIcon": "images/icons/icon.ico"
     },
     "linux": {
       "category": "Development",

@@ -455,6 +455,16 @@ function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCo
       let received = 0
       let lastProgress = 0
       const output = fs.createWriteStream(target)
+      let settled = false
+      const fail = (error) => {
+        if (settled) return
+        settled = true
+        request.destroy()
+        output.destroy()
+        reject(error)
+      }
+      response.on("error", fail)
+      output.on("error", fail)
       response.on("data", (chunk) => {
         received += chunk.length
         if (!total || received - lastProgress >= 16 * 1024 * 1024 || received === total) {
@@ -463,8 +473,11 @@ function downloadFile(url, target, { headers = {}, onProgress } = {}, redirectCo
         }
       })
       response.pipe(output)
-      output.on("finish", () => output.close(resolve))
-      output.on("error", reject)
+      output.on("finish", () => {
+        if (settled) return
+        settled = true
+        output.close((error) => error ? reject(error) : resolve())
+      })
     })
     request.setTimeout(30000, () => request.destroy(new Error("VM image download timed out")))
     request.on("error", reject)
@@ -881,6 +894,7 @@ class VmManager {
     this.vncProbeTimer = null
     this.serialDesktopFallbackTimer = null
     this.serialDesktopFallbackAttempts = 0
+    this.serialLoginAttempted = false
     this.guestAgentRetryTimer = null
     this.guestAgentConnecting = null
     this.guestAgentConnectAttempts = 0
@@ -1043,7 +1057,9 @@ class VmManager {
     const backgroundDirectory = resolveBackgroundDirectory(this.app)
     const qemuDataDirectory = resolveQemuDataDirectory(qemu)
     const acceleration = resolveQemuAcceleration(qemu, qemuDataDirectory)
-    const cpuModel = process.env.WORKTOPER_QEMU_CPU || (acceleration.name === "tcg" ? "max" : "host")
+    // WHPX on Windows does not support QEMU's "host" CPU model.
+    const cpuModel = process.env.WORKTOPER_QEMU_CPU
+      || (process.platform === "win32" || acceleration.name === "tcg" ? "max" : "host")
     this.sharedDirectory = sharedDirectory
     const args = qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobotPort, memoryMb, cpus, cpuModel, qgaSocketPath, qgaPort, displayArgs: display.args, sharedDirectory, backgroundDirectory, qemuDataDirectory, accelArgs: acceleration.args })
 
@@ -1053,6 +1069,8 @@ class VmManager {
       `\r\n[WorkToper] ${this.message("Preparing Smart Desktop", "正在准备 Smart Desktop")}`,
       `[WorkToper] ${this.message("Loading the system environment", "正在载入系统环境")}`,
       `[WorkToper] ${this.message("Initializing desktop services", "正在初始化桌面服务")}`,
+      `[WorkToper] QEMU: ${qemu}`,
+      `[WorkToper] Acceleration: ${acceleration.name}; CPU model: ${cpuModel}`,
     ].join("\r\n")}\r\n`)
     this.process = spawn(qemu, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
     const qemuProcess = this.process
@@ -1062,6 +1080,7 @@ class VmManager {
     this.lastDesktopLog = ""
     this.desktopRepairAttempted = false
     this.serialDesktopFallbackAttempts = 0
+    this.serialLoginAttempted = false
     this.guestAgentConnectAttempts = 0
     this.guestIntegrationPromise = null
     this.clearDesktopStartupTimers()
@@ -1069,12 +1088,30 @@ class VmManager {
     qemuProcess.stdout.on("data", (chunk) => this.send("worktoper:vm:boot", chunk.toString("utf8")))
     qemuProcess.stderr.on("data", (chunk) => {
       const text = chunk.toString("utf8")
+      if (text.trim()) this.send("worktoper:vm:boot", text)
       if (/Failed to get "write" lock|Is another process using the image/i.test(text)) {
         this.lastErrorDetail = this.message(`The VM image is already in use by another QEMU process: ${disk}. Quit the existing WorkToper Agent OS instance or stop the old QEMU process.`, `VM 镜像正在被另一个 QEMU 进程使用：${disk}。请先退出旧的 WorkToper Agent OS 或停止旧 QEMU。`)
         this.update({ phase: "error", detail: this.lastErrorDetail, cpuActive: false, diskActive: false, network: "disconnected" })
         return
       }
       if (/error|failed|could not/i.test(text)) this.update({ detail: text.trim().slice(0, 180) })
+    })
+    qemuProcess.once("error", (error) => {
+      if (this.process !== qemuProcess) return
+      const detail = this.message(
+        `QEMU could not start: ${error instanceof Error ? error.message : String(error)}. Check that the Windows runtime files are complete and that Windows Defender or antivirus software is not blocking qemu-system-x86_64.exe.`,
+        `QEMU 无法启动：${error instanceof Error ? error.message : String(error)}。请检查 Windows 运行库是否完整，以及 Windows Defender 或杀毒软件是否拦截了 qemu-system-x86_64.exe。`,
+      )
+      this.lastErrorDetail = detail
+      this.send("worktoper:vm:boot", `\r\n[WorkToper] ${detail}\r\n`)
+      this.clearDesktopStartupTimers()
+      this.clearGuestAgentRetry()
+      this.vncProxyServer?.close()
+      this.vncProxyServer = null
+      this.vncTcpPort = 0
+      this.connection = null
+      this.process = null
+      this.update({ phase: "error", detail, cpuActive: false, diskActive: false, network: "disconnected" })
     })
     qemuProcess.once("exit", (code, signal) => {
       if (this.process !== qemuProcess) return
@@ -1089,6 +1126,7 @@ class VmManager {
       this.desktopReady = false
       this.desktopRepairAttempted = false
       this.serialDesktopFallbackAttempts = 0
+      this.serialLoginAttempted = false
       this.guestIntegrationPromise = null
       this.clearDesktopStartupTimers()
       this.clearGuestAgentRetry()
@@ -1119,6 +1157,14 @@ class VmManager {
       displayMode: display.mode,
       displayName: display.name,
       vncWebSocketUrl: display.vncWebSocketUrl,
+    })
+    this.update({
+      phase: "loading",
+      detail: this.message("QEMU process started. Waiting for the Linux desktop.", "QEMU 进程已启动，正在等待 Linux 桌面"),
+      bootProgress: 10,
+      cpuActive: true,
+      diskActive: true,
+      network: "connecting",
     })
     this.connectSerial(serialPort)
     this.qgaPort = qgaPort
@@ -1875,6 +1921,12 @@ class VmManager {
         this.serial = socket
         this.send("worktoper:vm:boot", `\r\n[WorkToper] ${this.message("System console connected. Startup output is shown here.", "系统控制台已连接，启动输出会显示在这里。")}\r\n`)
         this.update({ detail: this.message("Serial port connected. Waiting for Linux systemd/getty output.", "串口已连接，等待 Linux systemd/getty 输出"), bootProgress: 40 })
+        setTimeout(() => {
+          if (this.serial !== socket || this.shellReady || socket.destroyed) return
+          // Wake getty so a hidden serial login prompt is not left waiting forever.
+          socket.write("\r")
+          this.send("worktoper:vm:boot", `\r\n[WorkToper] ${this.message("Checking the Linux serial login prompt.", "正在检查 Linux 串口登录提示。")}\r\n`)
+        }, 2500)
       })
       socket.on("data", (chunk) => {
         const text = chunk.toString("utf8")
@@ -1883,7 +1935,15 @@ class VmManager {
         } else {
           this.send("worktoper:vm:boot", text)
         }
-        if (/login:/i.test(text)) this.update({ detail: this.message("Linux login prompt detected", "Linux 登录提示已出现"), bootProgress: 82 })
+        if (/login:\s*$/im.test(text) || /(?:debian|linux)[^\r\n]*login:/i.test(text)) {
+          this.update({ detail: this.message("Linux login prompt detected. Signing in to start the desktop.", "Linux 登录提示已出现，正在登录并启动桌面"), bootProgress: Math.max(this.state.bootProgress, 78) })
+          if (!this.serialLoginAttempted) {
+            this.serialLoginAttempted = true
+            socket.write("worktoper\r")
+          }
+        } else if (/password:\s*$/im.test(text) && this.serialLoginAttempted && !this.shellReady) {
+          socket.write("worktoper\r")
+        }
         if (/worktoper@|root@|[$#]\s*$/.test(text)) this.markShellReady(text)
       })
       socket.on("error", () => {
@@ -2064,6 +2124,7 @@ class VmManager {
     this.sharedDirectory = ""
     this.qgaPort = 0
     this.serialDesktopFallbackAttempts = 0
+    this.serialLoginAttempted = false
     this.guestAgentConnectAttempts = 0
     if (this.resizeTimer) clearTimeout(this.resizeTimer)
     this.resizeTimer = null

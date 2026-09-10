@@ -67,12 +67,12 @@ pnpm vm:prepare
 ### 构建发行包
 
 ```bash
-pnpm dist:mac
-pnpm dist:win
-pnpm dist:linux
+npm run build:mac
+npm run build:win
+npm run build:linux
 ```
 
-Linux 产物为 AppImage 和 deb；macOS 产物为 DMG 和 ZIP；Windows 产物为 NSIS 安装包和 portable 包。正式发布 macOS 应用时还需要签名和 notarization。
+Linux 产物为 AppImage 和 deb；macOS 产物为 DMG 和 ZIP；Windows 产物为 NSIS 安装包，安装时可选择安装目录，安装成功后会自动创建桌面快捷方式。AppImage 使用静态 runtime，宿主系统无需安装 FUSE 2（`libfuse.so.2`）。正式发布 macOS 应用时还需要签名和 notarization。
 
 构建会在打包前和产物生成后校验内置 QEMU、固件、运行库与解压工具；任何目标平台运行时缺失都会直接终止构建。
 

@@ -13,6 +13,8 @@ files:
       - package.json
 icon: images/icons/icon.png
 compression: maximum
+toolsets:
+  appimage: 1.0.3
 electronLanguages:
   - en-US
   - zh-CN
@@ -47,7 +49,14 @@ win:
       to: runtime/tools/win32
   target:
     - nsis
-    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: WorkToper Agent OS
+  installerIcon: images/icons/icon.ico
+  uninstallerIcon: images/icons/icon.ico
 linux:
   category: Development
   icon: images/icons/icons

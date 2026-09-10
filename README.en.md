@@ -65,12 +65,12 @@ pnpm vm:prepare
 ### Packaging
 
 ```bash
-pnpm dist:mac
-pnpm dist:win
-pnpm dist:linux
+npm run build:mac
+npm run build:win
+npm run build:linux
 ```
 
-Linux builds produce AppImage and deb packages; macOS produces DMG and ZIP; Windows produces NSIS and portable packages. macOS distribution additionally requires signing and notarization.
+Linux builds produce AppImage and deb packages; macOS produces DMG and ZIP; Windows produces an NSIS installer that lets users choose the install directory and automatically creates a desktop shortcut after installation. The AppImage uses a static runtime and does not require FUSE 2 (`libfuse.so.2`) on the host. macOS distribution additionally requires signing and notarization.
 
 Packaging validates the bundled QEMU executable, firmware, runtime libraries, and archive tool both before packaging and in the unpacked application. A missing target runtime stops the build.
 

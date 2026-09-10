@@ -7,3 +7,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+# Logo 冻结规则
+
+- 当前仓库中的 logo 已经最终确认，属于冻结资源。任何后续任务都不得修改其尺寸、比例、颜色、圆角、线宽、透明边距或视觉样式。
