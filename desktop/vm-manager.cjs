@@ -835,8 +835,9 @@ function qemuArgs({ arch, disk, seed, serialPort, sshPort, vncTcpPort, agentRobo
   if (sharedDirectory && fileExists(sharedDirectory)) {
     args.push("-virtfs", `local,path=${qemuOptionValue(sharedDirectory)},mount_tag=worktoper_share,security_model=${getSharedSecurityModel()},id=worktoper_share,multidevs=remap`)
   }
-  if (backgroundDirectory) {
-    args.push("-virtfs", `local,path=${backgroundDirectory},mount_tag=worktoper_bg,security_model=mapped-xattr,readonly=on,id=worktoper_bg`)
+  if (backgroundDirectory && process.platform !== "win32") {
+    const backgroundSecurityModel = process.platform === "win32" ? "none" : "mapped-xattr"
+    args.push("-virtfs", `local,path=${qemuOptionValue(backgroundDirectory)},mount_tag=worktoper_bg,security_model=${backgroundSecurityModel},readonly=on,id=worktoper_bg`)
   }
   if (seed) args.push("-drive", `file=${seed},format=raw,if=virtio,media=cdrom,readonly=on`)
   return args
