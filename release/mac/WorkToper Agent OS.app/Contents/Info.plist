@@ -37,7 +37,7 @@
         <key>algorithm</key>
         <string>SHA256</string>
         <key>hash</key>
-        <string>43eaacd9c735ec3c1da6d1d65982555d51ebeaa463f70a2062204d8d9b07ca25</string>
+        <string>ffca11f642be544029a8f0e75e0d7d93ef902e69a8bd57931e4dcdae2f768bb5</string>
       </dict>
       <key>Resources/default_app.asar</key>
       <dict>
