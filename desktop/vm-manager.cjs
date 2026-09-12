@@ -531,14 +531,59 @@ function findExtractedFileInCandidates(candidates, matcher) {
   return ""
 }
 
+function findExtractedVmDisk(candidates, arch) {
+  const expectedNames = [
+    `worktoper-agent-os-${arch}.qcow2`,
+    `worktoper_agent_os_${arch}.qcow2`,
+    `worktoper-agent-os-${arch}-vm.qcow2`,
+  ]
+  for (const expectedName of expectedNames) {
+    const exactMatch = findExtractedFileInCandidates(candidates, (_file, name) => name === expectedName)
+    if (exactMatch) return exactMatch
+  }
+
+  const worktoperDisk = findExtractedFileInCandidates(candidates, (_file, name) => {
+    const normalized = name.toLowerCase()
+    return normalized.endsWith(".qcow2") && normalized.includes("worktoper") && !normalized.includes("base")
+  })
+  if (worktoperDisk) return worktoperDisk
+
+  const disks = []
+  for (const candidate of candidates) {
+    if (!fileExists(candidate)) continue
+    const stack = [candidate]
+    while (stack.length) {
+      const current = stack.pop()
+      let entries = []
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name)
+        if (entry.isDirectory()) stack.push(fullPath)
+        else if (entry.name.toLowerCase().endsWith(".qcow2")) disks.push(fullPath)
+      }
+    }
+  }
+  if (disks.length === 1) {
+    const name = path.basename(disks[0]).toLowerCase()
+    if (!name.includes("worktoper") && (name.includes("debian") || name.includes("base"))) {
+      throw new Error(`VM image archive contains a base Debian disk instead of the prepared WorkToper image: ${path.basename(disks[0])}`)
+    }
+    return disks[0]
+  }
+  throw new Error(disks.length > 1
+    ? `VM image archive contains multiple qcow2 files but no WorkToper disk could be identified: ${disks.map((disk) => path.basename(disk)).join(", ")}`
+    : "No qcow2 file was found in the VM image archive")
+}
+
 function installExtractedVmImage({ extractedDirectory, disk, arch }) {
   const candidates = getVmExtractedDirectoryCandidates(extractedDirectory, arch)
-  const expectedName = path.basename(disk)
-  const exactDisk = findExtractedFileInCandidates(candidates, (_file, name) => name === expectedName)
-  const fallbackDisk = exactDisk || findExtractedFileInCandidates(candidates, (_file, name) => name.endsWith(".qcow2"))
-  if (!fallbackDisk) throw new Error("No qcow2 file was found in the VM image archive")
+  const selectedDisk = findExtractedVmDisk(candidates, arch)
   fs.mkdirSync(path.dirname(disk), { recursive: true })
-  fs.renameSync(fallbackDisk, disk)
+  fs.renameSync(selectedDisk, disk)
 
   const markerName = `worktoper-agent-os-${arch}.initialized`
   const extractedMarker = findExtractedFileInCandidates(candidates, (_file, name) => name === markerName)
@@ -1311,7 +1356,7 @@ class VmManager {
       if (!this.process || !this.guestAgent || this.desktopReady || this.state.phase === "error") return
       attempts += 1
       try {
-        const status = await this.guestAgent.guestShell("(systemctl is-active --quiet lightdm || systemctl is-active --quiet display-manager) && pgrep -u worktoper -x xfce4-session >/dev/null && pgrep -u worktoper -x xfce4-panel >/dev/null && pgrep -u worktoper -x xfdesktop >/dev/null && pgrep -u worktoper -x xfwm4 >/dev/null && pgrep -f 'Xorg|Xwayland' >/dev/null", { captureOutput: true })
+        const status = await this.guestAgent.guestShell("(systemctl is-active --quiet lightdm || systemctl is-active --quiet display-manager) && (test -S /tmp/.X11-unix/X0 || pgrep -f 'Xorg|Xwayland' >/dev/null) && (pgrep -u worktoper -x xfce4-session >/dev/null || pgrep -u worktoper -x xfdesktop >/dev/null || pgrep -u worktoper -x xfwm4 >/dev/null)", { captureOutput: true })
         if (status.exitcode === 0) {
           const vncReady = await this.ensureEmbeddedVnc()
           if (vncReady) {
