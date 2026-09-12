@@ -13,7 +13,7 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 out/
-release/WorkToper*
+release/
 release-*/
 runtime/images/*
 !runtime/images/.gitkeep
