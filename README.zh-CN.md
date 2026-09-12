@@ -76,6 +76,28 @@ Linux 产物为 AppImage 和 deb；macOS 产物为 DMG 和 ZIP；Windows 产物�
 
 构建会在打包前和产物生成后校验内置 QEMU、固件、运行库与解压工具；任何目标平台运行时缺失都会直接终止构建。
 
+### macOS 桌面版安装与安全提示
+
+1. 下载 `WorkToper Agent OS.dmg`，双击打开后将应用拖入 `Applications` 文件夹。
+2. 从“应用程序”目录启动应用。首次启动若提示“无法验证开发者”，请按住 Control 点击应用，选择“打开”，再确认一次。
+3. 如果系统仍提示应用已损坏或无法打开，确认 DMG 来自可信来源后，在“终端”执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/WorkToper Agent OS.app"
+open "/Applications/WorkToper Agent OS.app"
+```
+
+上面的命令只移除 macOS 为下载文件添加的隔离标记，不会关闭 Gatekeeper；不要使用 `spctl --master-disable` 全局关闭系统安全保护。安装后应用会自动下载并准备 Linux VM 镜像，请保持网络连接并预留磁盘空间。
+
+个人开发者可以免费制作仅供测试的 ad-hoc 签名包：
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false \
+npm run build:mac -- --config.mac.identity=-
+```
+
+ad-hoc 签名不等于 Apple Developer 证书，其他用户仍可能看到安全警告，也不能用于公开分发。要让普通用户在 macOS 上无警告安装，需要 Apple Developer Program 的 `Developer ID Application` 证书并完成 notarization。
+
 ### 项目结构
 
 ```text

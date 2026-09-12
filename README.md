@@ -74,6 +74,28 @@ Linux builds produce AppImage and deb packages; macOS produces DMG and ZIP; Wind
 
 Packaging validates the bundled QEMU executable, firmware, runtime libraries, and archive tool both before packaging and in the unpacked application. A missing target runtime stops the build.
 
+### macOS desktop installation and security prompts
+
+1. Download `WorkToper Agent OS.dmg`, open it, and drag the application to the `Applications` folder.
+2. Launch it from `Applications`. If macOS says the developer cannot be verified, Control-click the app, choose **Open**, and confirm once.
+3. If macOS still reports that the app is damaged or cannot be opened, first verify that the DMG came from a trusted source, then run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/WorkToper Agent OS.app"
+open "/Applications/WorkToper Agent OS.app"
+```
+
+This removes only the quarantine attribute added to downloaded files; it does not disable Gatekeeper. Do not use `spctl --master-disable` to turn off system-wide protection. On first launch the app downloads and prepares the Linux VM image, so keep an internet connection available and allow enough disk space.
+
+Individual developers can create a free ad-hoc signed build for testing:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false \
+npm run build:mac -- --config.mac.identity=-
+```
+
+Ad-hoc signing is not an Apple Developer certificate. Other users may still see security warnings, and it is not suitable for public distribution. Warning-free macOS distribution requires an Apple Developer Program `Developer ID Application` certificate and notarization.
+
 ### Project structure
 
 ```text
